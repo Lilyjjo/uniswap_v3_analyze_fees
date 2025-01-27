@@ -1,0 +1,6 @@
+[package]
+name = "uniswap_v3_analyze_fees"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
