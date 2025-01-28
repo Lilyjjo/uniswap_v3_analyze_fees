@@ -3,12 +3,9 @@ use std::{str::FromStr, sync::Arc};
 use alloy::{
     node_bindings::{Anvil, AnvilInstance},
     primitives::{Address, Log as AbiLog, I256, U160, U256},
-    providers::{ext::AnvilApi, layers::AnvilProvider, ProviderBuilder, RootProvider},
+    providers::{ext::AnvilApi, layers::AnvilProvider, ProviderBuilder},
     sol_types::SolEvent,
-    transports::http::{
-        reqwest::{self, Url},
-        Http,
-    },
+    transports::http::reqwest::Url,
 };
 use eyre::{bail, Context, ContextCompat, Result};
 use tracing::{error, info};
@@ -22,13 +19,12 @@ use crate::abi::{
     Weth::WethInstance,
 };
 
-pub(crate) type HttpClient = Http<reqwest::Client>;
-pub(crate) type AnvilHttpProvider = Arc<AnvilProvider<RootProvider<HttpClient>, HttpClient>>;
+use super::{ArcAnvilHttpProvider, HttpClient};
 
 pub(crate) async fn anvil_connection(
     http_url: String,
     fork_block: u64,
-) -> Result<(Arc<AnvilInstance>, AnvilHttpProvider)> {
+) -> Result<(Arc<AnvilInstance>, ArcAnvilHttpProvider)> {
     info!("Connecting to anvil...");
     let parsed_url: Url = http_url.parse()?;
 
@@ -46,19 +42,16 @@ pub(crate) async fn anvil_connection(
 }
 
 pub(crate) async fn deploy_and_initialize_pool(
-    anvil_provider: AnvilHttpProvider,
-    uniswap_factory: Arc<IUniswapV3FactoryInstance<HttpClient, AnvilHttpProvider>>,
+    anvil_provider: ArcAnvilHttpProvider,
+    uniswap_factory: Arc<IUniswapV3FactoryInstance<HttpClient, ArcAnvilHttpProvider>>,
     deployer: Address,
     weth: Address,
     pool_create_event: PoolCreated,
     initialization_event: Initialize,
 ) -> Result<(
-    Arc<UniswapV3PoolInstance<HttpClient, AnvilHttpProvider>>,
-    Arc<ClankerTokenInstance<HttpClient, AnvilHttpProvider>>,
+    Arc<UniswapV3PoolInstance<HttpClient, ArcAnvilHttpProvider>>,
+    Arc<ClankerTokenInstance<HttpClient, ArcAnvilHttpProvider>>,
 )> {
-    // start impersonation
-    anvil_provider.anvil_impersonate_account(deployer).await?;
-
     // deploy clanker token with token0/token1 in same order
     let clanker_token_address = if pool_create_event.token0 == weth {
         pool_create_event.token1
@@ -84,6 +77,7 @@ pub(crate) async fn deploy_and_initialize_pool(
     // deploy pool
     let receipt = uniswap_factory
         .createPool(token0, token1, pool_create_event.fee)
+        .from(deployer)
         .send()
         .await?
         .get_receipt()
@@ -96,6 +90,7 @@ pub(crate) async fn deploy_and_initialize_pool(
     // fetch pool
     let pool = uniswap_factory
         .getPool(token0, token1, pool_create_event.fee)
+        .from(deployer)
         .call()
         .await?;
     let pool = Arc::new(UniswapV3Pool::new(pool.pool, anvil_provider.clone()));
@@ -105,6 +100,7 @@ pub(crate) async fn deploy_and_initialize_pool(
     // initialize pool
     let receipt = pool
         .initialize(initialization_event.sqrtPriceX96)
+        .from(deployer)
         .send()
         .await?
         .get_receipt()
@@ -143,14 +139,12 @@ pub(crate) async fn deploy_and_initialize_pool(
 }
 
 pub(crate) async fn pool_mint(
-    anvil_provider: AnvilHttpProvider,
-    position_manager: Arc<INonfungiblePositionManagerInstance<HttpClient, AnvilHttpProvider>>,
-    pool: Arc<UniswapV3PoolInstance<HttpClient, AnvilHttpProvider>>,
+    position_manager: Arc<INonfungiblePositionManagerInstance<HttpClient, ArcAnvilHttpProvider>>,
+    pool: Arc<UniswapV3PoolInstance<HttpClient, ArcAnvilHttpProvider>>,
     minter: Address,
     mint_event: &Mint,
 ) -> Result<()> {
     info!("minting");
-    anvil_provider.anvil_impersonate_account(minter).await?;
 
     let token0 = pool.token0().call().await?._0;
     let token1 = pool.token1().call().await?._0;
@@ -168,11 +162,12 @@ pub(crate) async fn pool_mint(
         amount0Min: U256::from(0),
         amount1Min: U256::from(0),
         recipient: minter,
-        deadline: U256::from_str("1737924142").unwrap(), // timestamp need to just be in future
+        deadline: U256::from_str("8737924142").unwrap(), // timestamp need to just be in future
     };
 
     let receipt = position_manager
         .mint(mint_params)
+        .from(minter)
         .send()
         .await?
         .get_receipt()
@@ -214,14 +209,12 @@ pub(crate) async fn pool_mint(
 }
 
 pub(crate) async fn pool_swap(
-    anvil_provider: AnvilHttpProvider,
-    pool: Arc<UniswapV3PoolInstance<HttpClient, AnvilHttpProvider>>,
-    swap_router: Arc<ISwapRouterInstance<HttpClient, AnvilHttpProvider>>,
+    pool: Arc<UniswapV3PoolInstance<HttpClient, ArcAnvilHttpProvider>>,
+    swap_router: Arc<ISwapRouterInstance<HttpClient, ArcAnvilHttpProvider>>,
     swapper: Address,
     swap_event: &Swap,
 ) -> Result<()> {
     info!("swapping");
-    anvil_provider.anvil_impersonate_account(swapper).await?;
 
     // grab token ordering
     let token_0 = pool.token0().call().await?._0;
@@ -249,6 +242,7 @@ pub(crate) async fn pool_swap(
 
     let receipt = swap_router
         .exactInputSingle(swap_params)
+        .from(swapper)
         .send()
         .await?
         .get_receipt()
@@ -290,15 +284,16 @@ pub(crate) async fn pool_swap(
 }
 
 // Prepares an account for use in simulation by:
-// 1. Giving the account the native token
-// 2. Swapping half for WETH
-// 3. Approving the swap router and position manager
+// 1. Registering the account for impersonation
+// 2. Giving the account the native token
+// 3. Swapping half for WETH
+// 4. Approving the swap router and position manager
 pub(crate) async fn initialize_simulation_account(
-    anvil_provider: AnvilHttpProvider,
+    anvil_provider: ArcAnvilHttpProvider,
     address: Address,
     amount: U256,
-    token: Option<Arc<ClankerTokenInstance<HttpClient, AnvilHttpProvider>>>,
-    weth: Arc<WethInstance<HttpClient, AnvilHttpProvider>>,
+    token: Option<Arc<ClankerTokenInstance<HttpClient, ArcAnvilHttpProvider>>>,
+    weth: Arc<WethInstance<HttpClient, ArcAnvilHttpProvider>>,
     swap_router: &Address,
     position_manager: &Address,
 ) -> Result<()> {
@@ -319,36 +314,27 @@ pub(crate) async fn initialize_simulation_account(
         .await?;
 
     if let Some(token) = token {
-        approve_token(
-            anvil_provider.clone(),
-            token,
-            position_manager,
-            swap_router,
-            address,
-        )
-        .await?;
+        approve_token(token, position_manager, swap_router, address).await?;
     }
 
-    approve_weth(anvil_provider, weth, position_manager, swap_router, address).await?;
+    approve_weth(weth, position_manager, swap_router, address).await?;
 
     Ok(())
 }
 
 pub(crate) async fn approve_token(
-    anvil_provider: AnvilHttpProvider,
-    token: Arc<ClankerTokenInstance<HttpClient, AnvilHttpProvider>>,
+    token: Arc<ClankerTokenInstance<HttpClient, ArcAnvilHttpProvider>>,
     position_manager: &Address,
     swap_router: &Address,
     approver: Address,
 ) -> Result<()> {
-    anvil_provider.anvil_impersonate_account(approver).await?;
-
     let max_approval =
         U256::from_str("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
             .unwrap();
 
     let receipt = token
         .approve(swap_router.clone(), max_approval)
+        .from(approver)
         .send()
         .await?
         .get_receipt()
@@ -359,6 +345,7 @@ pub(crate) async fn approve_token(
 
     let receipt = token
         .approve(position_manager.clone(), max_approval)
+        .from(approver)
         .send()
         .await?
         .get_receipt()
@@ -366,27 +353,24 @@ pub(crate) async fn approve_token(
     if !receipt.inner.status() {
         bail!("Failed to approve token for position manager");
     }
-
     Ok(())
 }
 
 // TODO combine with approve_token if have time to figure
 // out generics over the Sol types
 pub(crate) async fn approve_weth(
-    anvil_provider: AnvilHttpProvider,
-    weth: Arc<WethInstance<HttpClient, AnvilHttpProvider>>,
+    weth: Arc<WethInstance<HttpClient, ArcAnvilHttpProvider>>,
     position_manager: &Address,
     swap_router: &Address,
     approver: Address,
 ) -> Result<()> {
-    anvil_provider.anvil_impersonate_account(approver).await?;
-
     let max_approval =
         U256::from_str("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
             .unwrap();
 
     let receipt = weth
         .approve(swap_router.clone(), max_approval)
+        .from(approver)
         .send()
         .await?
         .get_receipt()
@@ -397,6 +381,7 @@ pub(crate) async fn approve_weth(
 
     let receipt = weth
         .approve(position_manager.clone(), max_approval)
+        .from(approver)
         .send()
         .await?
         .get_receipt()
@@ -409,15 +394,13 @@ pub(crate) async fn approve_weth(
 }
 
 pub(crate) async fn deploy_clanker_token(
-    anvil_provider: AnvilHttpProvider,
+    anvil_provider: ArcAnvilHttpProvider,
     deployer: Address,
     fid_deployer: Address,
     target_address: Address,
     weth: Address,
-) -> Result<Arc<ClankerTokenInstance<HttpClient, AnvilHttpProvider>>> {
-    anvil_provider.anvil_impersonate_account(deployer).await?;
-
-    let mut contract: ClankerTokenInstance<HttpClient, AnvilHttpProvider>;
+) -> Result<Arc<ClankerTokenInstance<HttpClient, ArcAnvilHttpProvider>>> {
+    let mut contract: ClankerTokenInstance<HttpClient, ArcAnvilHttpProvider>;
     loop {
         contract = ClankerToken::new(
             ClankerToken::deploy_builder(

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-alloy = {version = "0.9.2", features = ["consensus", "contract", "eips", "network", "providers","provider-ws", "transport-http", "pubsub", "rpc", "rpc-types", "sol-types", "json-abi", "reqwest", "node-bindings"]}
+alloy = {version = "0.9.2", features = ["consensus", "contract", "eips", "network", "providers","provider-ws", "transport-http", "pubsub", "rpc", "rpc-types", "sol-types", "json-abi", "rand", "reqwest", "node-bindings"]}
 eyre = "0.6.12"
 tokio = { version = "1.43.0", features = ["full"] }
 tracing-subscriber = { version = "0.3", features = [

@@ -1,6 +1,6 @@
 use alloy::primitives::Address;
 use eyre::{Result, WrapErr};
-use fee_analyzer::{analyze_pool, csv_converter::CSVReaderConfig};
+use fee_analyzer::{csv_converter::CSVReaderConfig, PoolAnalyzer, PoolAnalyzerConfig};
 use tracing::info;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
@@ -80,16 +80,18 @@ async fn main() -> Result<()> {
         pool_created_events_path,
     };
 
-    analyze_pool(
+    let pool_analyzer = PoolAnalyzer::initialize(PoolAnalyzerConfig {
         http_url,
         fork_block,
         uniswap_v3_factory_address,
         uniswap_v3_position_manager_address,
         uniswap_v3_swap_router_address,
         weth_address,
-        csv_reader_config,
-    )
+        config: csv_reader_config,
+    })
     .await?;
+
+    pool_analyzer.run_simulation().await?;
 
     info!("Pool analysis complete");
 
