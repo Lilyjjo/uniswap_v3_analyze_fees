@@ -42,6 +42,8 @@ WHERE pool = 0xFdbAf04326AcC24e3d1788333826b71E3291863a ORDER BY (evt_block_numb
 ```
 The default Dune decoded uniswap event column format is assumed by the program, so if you want to use a different csv format you will need to modify the code's parsing logic in `src/fee_analyzer/csv_converter.rs`.
 
+Note: all queries should be restricted to the same max blocknumber or the program could fail. 
+
 ## Usage
 
 ```bash

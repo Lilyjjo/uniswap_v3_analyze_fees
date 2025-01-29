@@ -5,7 +5,7 @@ use alloy::primitives::{
     Address, I256, U160, U256,
 };
 use chrono::{DateTime, Utc};
-use eyre::Result;
+use eyre::{bail, Result};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -80,6 +80,10 @@ pub(crate) async fn pool_events(config: CSVReaderConfig) -> Result<Vec<Simulatio
         "Decrease liquidity events lengeth: {:?}",
         decrease_liquidity_simulation_events.len()
     );
+
+    if collect_npm_simulation_events.len() != collect_pool_simulation_events.len() {
+        bail!("Collect npm events and collect pool events have different lengths, check if the same block range is used for all events or if positions are being created without use of the position manager");
+    }
 
     let mut simulation_events = [
         initialize_simulation_events,
