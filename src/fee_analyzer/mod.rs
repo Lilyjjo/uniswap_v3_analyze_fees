@@ -16,7 +16,10 @@ use simulation_events::{find_first_event, EventType, SimulationEvent};
 use tracing::info;
 
 use crate::abi::{
-    ClankerToken::ClankerTokenInstance, INonfungiblePositionManager, ISwapRouter, IUniswapV3Factory, UniswapV3Pool::{Mint, Swap, UniswapV3PoolInstance}, Weth
+    ClankerToken::ClankerTokenInstance,
+    INonfungiblePositionManager, ISwapRouter, IUniswapV3Factory,
+    UniswapV3Pool::{Mint, Swap, UniswapV3PoolInstance},
+    Weth,
 };
 
 mod contract_interactions;

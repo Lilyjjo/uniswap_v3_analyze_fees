@@ -65,18 +65,30 @@ async fn main() -> Result<()> {
     let burn_events_path =
         std::env::var("BURN_CSV_FILE_PATH").expect("BURN_CSV_FILE_PATH is required");
 
-    let collect_events_path =
-        std::env::var("COLLECT_CSV_FILE_PATH").expect("COLLECT_CSV_FILE_PATH is required");
-
     let pool_created_events_path = std::env::var("POOL_CREATED_CSV_FILE_PATH")
         .expect("POOL_CREATED_CSV_FILE_PATH is required");
+
+    let collect_pool_events_path = std::env::var("COLLECT_POOL_CSV_FILE_PATH")
+        .expect("COLLECT_POOL_CSV_FILE_PATH is required");
+
+    let collect_npm_events_path =
+        std::env::var("COLLECT_NPM_CSV_FILE_PATH").expect("COLLECT_NPM_CSV_FILE_PATH is required");
+
+    let increase_liquidity_events_path = std::env::var("INCREASE_LIQUIDITY_CSV_FILE_PATH")
+        .expect("INCREASE_LIQUIDITY_CSV_FILE_PATH is required");
+
+    let decrease_liquidity_events_path = std::env::var("DECREASE_LIQUIDITY_CSV_FILE_PATH")
+        .expect("DECREASE_LIQUIDITY_CSV_FILE_PATH is required");
 
     let csv_reader_config = CSVReaderConfig {
         initialize_events_path,
         swap_events_path,
         mint_events_path,
         burn_events_path,
-        collect_events_path,
+        collect_pool_events_path,
+        collect_npm_events_path,
+        increase_liquidity_events_path,
+        decrease_liquidity_events_path,
         pool_created_events_path,
     };
 

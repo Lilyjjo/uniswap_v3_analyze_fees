@@ -11,8 +11,9 @@ use tracing::info;
 
 use super::simulation_events::{Event, SimulationEvent};
 use crate::abi::{
+    INonfungiblePositionManager::{Collect as CollectNpm, DecreaseLiquidity, IncreaseLiquidity},
     IUniswapV3Factory::PoolCreated,
-    UniswapV3Pool::{Burn, Collect, Initialize, Mint, Swap},
+    UniswapV3Pool::{Burn, Collect as CollectPool, Initialize, Mint, Swap},
 };
 
 pub struct CSVReaderConfig {
@@ -20,8 +21,11 @@ pub struct CSVReaderConfig {
     pub swap_events_path: String,
     pub mint_events_path: String,
     pub burn_events_path: String,
-    pub collect_events_path: String,
+    pub collect_pool_events_path: String,
+    pub collect_npm_events_path: String,
     pub pool_created_events_path: String,
+    pub increase_liquidity_events_path: String,
+    pub decrease_liquidity_events_path: String,
 }
 
 pub(crate) async fn pool_events(config: CSVReaderConfig) -> Result<Vec<SimulationEvent>> {
@@ -37,19 +41,44 @@ pub(crate) async fn pool_events(config: CSVReaderConfig) -> Result<Vec<Simulatio
     let burn_events = read_burn_events(&config.burn_events_path)?;
     let burn_simulation_events = convert_burn_events(burn_events)?;
 
-    let collect_events = read_collect_events(&config.collect_events_path)?;
-    let collect_simulation_events = convert_collect_events(collect_events)?;
+    let collect_pool_events = read_collect_pool_events(&config.collect_pool_events_path)?;
+    let collect_pool_simulation_events = convert_collect_pool_events(collect_pool_events)?;
+
+    let collect_npm_events = read_collect_npm_events(&config.collect_npm_events_path)?;
+    let collect_npm_simulation_events = convert_collect_npm_events(collect_npm_events)?;
 
     let pool_created_events = read_pool_created_events(&config.pool_created_events_path)?;
     let pool_created_simulation_events = convert_pool_created_events(pool_created_events)?;
+
+    let increase_liquidity_events =
+        read_increase_liquidity_events(&config.increase_liquidity_events_path)?;
+    let increase_liquidity_simulation_events =
+        convert_increase_liquidity_events(increase_liquidity_events)?;
+
+    let decrease_liquidity_events =
+        read_decrease_liquidity_events(&config.decrease_liquidity_events_path)?;
+    let decrease_liquidity_simulation_events =
+        convert_decrease_liquidity_events(decrease_liquidity_events)?;
 
     info!("Initialize events: {:?}", initialize_simulation_events);
     info!("Pool created events: {:?}", pool_created_simulation_events);
     info!("Mint events lengeth: {:?}", mint_simulation_events.len());
     info!("Burn events lengeth: {:?}", burn_simulation_events.len());
     info!(
-        "Collect events lengeth: {:?}",
-        collect_simulation_events.len()
+        "Collect pool events lengeth: {:?}",
+        collect_pool_simulation_events.len()
+    );
+    info!(
+        "Collect npm events lengeth: {:?}",
+        collect_npm_simulation_events.len()
+    );
+    info!(
+        "Increase liquidity events lengeth: {:?}",
+        increase_liquidity_simulation_events.len()
+    );
+    info!(
+        "Decrease liquidity events lengeth: {:?}",
+        decrease_liquidity_simulation_events.len()
     );
 
     let mut simulation_events = [
@@ -57,8 +86,11 @@ pub(crate) async fn pool_events(config: CSVReaderConfig) -> Result<Vec<Simulatio
         pool_created_simulation_events,
         mint_simulation_events,
         burn_simulation_events,
-        collect_simulation_events,
+        collect_pool_simulation_events,
         swap_simulation_events,
+        collect_npm_simulation_events,
+        increase_liquidity_simulation_events,
+        decrease_liquidity_simulation_events,
     ]
     .concat();
 
@@ -319,7 +351,7 @@ fn convert_burn_events(events: Vec<CSVBurnEvent>) -> Result<Vec<SimulationEvent>
 
 #[allow(non_snake_case, dead_code)]
 #[derive(Debug, Deserialize)]
-struct CSVCollectEvent {
+struct CSVCollectPoolEvent {
     contract_address: String,
     evt_tx_hash: String,
     evt_tx_from: String,
@@ -335,20 +367,20 @@ struct CSVCollectEvent {
     tickUpper: String,
 }
 
-fn read_collect_events(path: &str) -> Result<Vec<CSVCollectEvent>> {
+fn read_collect_pool_events(path: &str) -> Result<Vec<CSVCollectPoolEvent>> {
     let file = std::fs::File::open(path)?;
     let mut rdr = csv::Reader::from_reader(file);
     let mut events = Vec::new();
 
     for result in rdr.deserialize() {
-        let event: CSVCollectEvent = result?;
+        let event: CSVCollectPoolEvent = result?;
         events.push(event);
     }
 
     Ok(events)
 }
 
-fn convert_collect_events(events: Vec<CSVCollectEvent>) -> Result<Vec<SimulationEvent>> {
+fn convert_collect_pool_events(events: Vec<CSVCollectPoolEvent>) -> Result<Vec<SimulationEvent>> {
     Ok(events
         .into_iter()
         .map(|event| SimulationEvent {
@@ -356,13 +388,158 @@ fn convert_collect_events(events: Vec<CSVCollectEvent>) -> Result<Vec<Simulation
             block: event.evt_block_number,
             log_index: event.evt_index,
             from: Address::from_str(&event.evt_tx_from).unwrap(),
-            event: Event::Collect(Collect {
+            event: Event::CollectPool(CollectPool {
                 amount0: u128::from_str(&event.amount0).unwrap(),
                 amount1: u128::from_str(&event.amount1).unwrap(),
                 owner: Address::from_str(&event.owner).unwrap(),
                 recipient: Address::from_str(&event.recipient).unwrap(),
                 tickLower: I24::from_dec_str(&event.tickLower).unwrap(),
                 tickUpper: I24::from_dec_str(&event.tickUpper).unwrap(),
+            }),
+        })
+        .collect())
+}
+
+#[allow(non_snake_case, dead_code)]
+#[derive(Debug, Deserialize)]
+struct CSVIncreaseLiquidityEvent {
+    contract_address: String,
+    evt_tx_hash: String,
+    evt_tx_from: String,
+    evt_tx_to: String,
+    evt_index: u64,
+    evt_block_time: String,
+    evt_block_number: u64,
+    tokenId: String,
+    liquidity: String,
+    amount0: String,
+    amount1: String,
+}
+
+fn read_increase_liquidity_events(path: &str) -> Result<Vec<CSVIncreaseLiquidityEvent>> {
+    let file = std::fs::File::open(path)?;
+    let mut rdr = csv::Reader::from_reader(file);
+    let mut events = Vec::new();
+
+    for result in rdr.deserialize() {
+        let event: CSVIncreaseLiquidityEvent = result?;
+        events.push(event);
+    }
+
+    Ok(events)
+}
+
+fn convert_increase_liquidity_events(
+    events: Vec<CSVIncreaseLiquidityEvent>,
+) -> Result<Vec<SimulationEvent>> {
+    Ok(events
+        .into_iter()
+        .map(|event| SimulationEvent {
+            pool_address: Address::from_str(&event.contract_address).unwrap(),
+            block: event.evt_block_number,
+            log_index: event.evt_index,
+            from: Address::from_str(&event.evt_tx_from).unwrap(),
+            event: Event::IncreaseLiquidity(IncreaseLiquidity {
+                tokenId: U256::from_str(&event.tokenId).unwrap(),
+                liquidity: u128::from_str(&event.liquidity).unwrap(),
+                amount0: U256::from_str(&event.amount0).unwrap(),
+                amount1: U256::from_str(&event.amount1).unwrap(),
+            }),
+        })
+        .collect())
+}
+
+#[allow(non_snake_case, dead_code)]
+#[derive(Debug, Deserialize)]
+struct CSVDecreaseLiquidityEvent {
+    contract_address: String,
+    evt_tx_hash: String,
+    evt_tx_from: String,
+    evt_tx_to: String,
+    evt_index: u64,
+    evt_block_time: String,
+    evt_block_number: u64,
+    tokenId: String,
+    liquidity: String,
+    amount0: String,
+    amount1: String,
+}
+
+fn read_decrease_liquidity_events(path: &str) -> Result<Vec<CSVDecreaseLiquidityEvent>> {
+    let file = std::fs::File::open(path)?;
+    let mut rdr = csv::Reader::from_reader(file);
+    let mut events = Vec::new();
+
+    for result in rdr.deserialize() {
+        let event: CSVDecreaseLiquidityEvent = result?;
+        events.push(event);
+    }
+
+    Ok(events)
+}
+
+fn convert_decrease_liquidity_events(
+    events: Vec<CSVDecreaseLiquidityEvent>,
+) -> Result<Vec<SimulationEvent>> {
+    Ok(events
+        .into_iter()
+        .map(|event| SimulationEvent {
+            pool_address: Address::from_str(&event.contract_address).unwrap(),
+            block: event.evt_block_number,
+            log_index: event.evt_index,
+            from: Address::from_str(&event.evt_tx_from).unwrap(),
+            event: Event::DecreaseLiquidity(DecreaseLiquidity {
+                tokenId: U256::from_str(&event.tokenId).unwrap(),
+                liquidity: u128::from_str(&event.liquidity).unwrap(),
+                amount0: U256::from_str(&event.amount0).unwrap(),
+                amount1: U256::from_str(&event.amount1).unwrap(),
+            }),
+        })
+        .collect())
+}
+
+#[allow(non_snake_case, dead_code)]
+#[derive(Debug, Deserialize)]
+struct CSVCollectNpmEvent {
+    contract_address: String,
+    evt_tx_hash: String,
+    evt_tx_from: String,
+    evt_tx_to: String,
+    evt_index: u64,
+    evt_block_time: String,
+    evt_block_number: u64,
+    tokenId: String,
+    recipient: String,
+    amount0: String,
+    amount1: String,
+}
+
+fn read_collect_npm_events(path: &str) -> Result<Vec<CSVCollectNpmEvent>> {
+    let file = std::fs::File::open(path)?;
+    let mut rdr = csv::Reader::from_reader(file);
+    let mut events = Vec::new();
+
+    for result in rdr.deserialize() {
+        let event: CSVCollectNpmEvent = result?;
+        events.push(event);
+    }
+
+    Ok(events)
+}
+
+fn convert_collect_npm_events(events: Vec<CSVCollectNpmEvent>) -> Result<Vec<SimulationEvent>> {
+    Ok(events
+        .into_iter()
+        .map(|event| SimulationEvent {
+            pool_address: Address::from_str(&event.contract_address).unwrap(),
+            block: event.evt_block_number,
+            log_index: event.evt_index,
+            from: Address::from_str(&event.evt_tx_from).unwrap(),
+            event: Event::CollectNpm(CollectNpm {
+                tokenId: U256::from_str(&event.tokenId).unwrap(),
+                recipient: Address::from_str(&event.recipient).unwrap(),
+                amount0: U256::from_str(&event.amount0).unwrap(),
+                amount1: U256::from_str(&event.amount1).unwrap(),
             }),
         })
         .collect())

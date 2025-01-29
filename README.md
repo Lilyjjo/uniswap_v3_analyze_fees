@@ -21,6 +21,20 @@ SELECT *
 FROM uniswap_v3_base.UniswapV3Pool_evt_Initialize
 WHERE contract_address = 0xFdbAf04326AcC24e3d1788333826b71E3291863a ORDER BY (evt_block_number, evt_index);
 
+-- For uniswap v3 nonfungible position manager events
+WITH base_mints AS (
+    SELECT output_tokenId
+    FROM uniswap_v3_base.nonfungiblepositionmanager_call_mint 
+    WHERE LOWER(JSON_VALUE(params, 'lax $.token1')) = LOWER('0x4200000000000000000000000000000000000006') 
+    AND LOWER(JSON_VALUE(params, 'lax $.token0')) = LOWER('0x2f6c17fa9f9bC3600346ab4e48C0701e1d5962AE')
+    AND call_success = true
+)
+SELECT il.*
+FROM base_mints m
+LEFT JOIN 
+    uniswap_v3_base.nonfungiblepositionmanager_evt_increaseliquidity il 
+    ON m.output_tokenId = il.tokenId
+
 -- For uniswap v3 factory events
 SELECT *
 FROM uniswap_v3_base.UniswapV3Factory_evt_PoolCreated

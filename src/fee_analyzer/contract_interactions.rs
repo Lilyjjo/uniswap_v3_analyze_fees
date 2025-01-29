@@ -12,10 +12,10 @@ use tracing::{error, info};
 
 use crate::abi::{
     ClankerToken::{self, ClankerTokenInstance},
-    INonfungiblePositionManager::{INonfungiblePositionManagerInstance, MintParams},
+    INonfungiblePositionManager::{CollectParams, INonfungiblePositionManagerInstance, MintParams},
     ISwapRouter::{ExactInputSingleParams, ISwapRouterInstance},
     IUniswapV3Factory::{IUniswapV3FactoryInstance, PoolCreated},
-    UniswapV3Pool::{self, Initialize, Mint, Swap, UniswapV3PoolInstance},
+    UniswapV3Pool::{self, Collect, Initialize, Mint, Swap, UniswapV3PoolInstance},
     Weth::WethInstance,
 };
 
@@ -279,6 +279,21 @@ pub(crate) async fn pool_swap(
         error!("swap log: {:?}", swap_log);
         bail!("Mismatch in swap outcomes");
     }
+
+    Ok(())
+}
+
+pub(crate) async fn pool_collect(
+    pool: Arc<UniswapV3PoolInstance<HttpClient, ArcAnvilHttpProvider>>,
+    position_manager: Arc<INonfungiblePositionManagerInstance<HttpClient, ArcAnvilHttpProvider>>,
+    collector: Address,
+    amount0: U256,
+    amount1: U256,
+    collect_event: &Collect,
+) -> Result<()> {
+    let token0 = pool.token0().call().await?._0;
+    let token1 = pool.token1().call().await?._0;
+    let fee = pool.fee().call().await?._0;
 
     Ok(())
 }

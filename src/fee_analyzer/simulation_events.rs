@@ -4,8 +4,9 @@ use alloy::primitives::Address;
 use eyre::Result;
 
 use crate::abi::{
+    INonfungiblePositionManager::{Collect as CollectNpm, DecreaseLiquidity, IncreaseLiquidity},
     IUniswapV3Factory::PoolCreated,
-    UniswapV3Pool::{Burn, Collect, Initialize, Mint, Swap},
+    UniswapV3Pool::{Burn, Collect as CollectPool, Initialize, Mint, Swap},
 };
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Event {
@@ -13,7 +14,10 @@ pub(crate) enum Event {
     Mint(Mint),
     Burn(Burn),
     Swap(Swap),
-    Collect(Collect),
+    CollectPool(CollectPool),
+    CollectNpm(CollectNpm),
+    IncreaseLiquidity(IncreaseLiquidity),
+    DecreaseLiquidity(DecreaseLiquidity),
     Initialize(Initialize),
 }
 
@@ -23,7 +27,10 @@ pub(crate) enum EventType {
     Mint,
     Burn,
     Swap,
-    Collect,
+    CollectPool,
+    CollectNpm,
+    IncreaseLiquidity,
+    DecreaseLiquidity,
     Initialize,
 }
 
@@ -61,7 +68,10 @@ impl Event {
             Event::Mint(_) => EventType::Mint,
             Event::Burn(_) => EventType::Burn,
             Event::Swap(_) => EventType::Swap,
-            Event::Collect(_) => EventType::Collect,
+            Event::CollectPool(_) => EventType::CollectPool,
+            Event::CollectNpm(_) => EventType::CollectNpm,
+            Event::IncreaseLiquidity(_) => EventType::IncreaseLiquidity,
+            Event::DecreaseLiquidity(_) => EventType::DecreaseLiquidity,
             Event::Initialize(_) => EventType::Initialize,
         }
     }
@@ -123,13 +133,13 @@ impl TryFrom<SimulationEvent> for Swap {
     }
 }
 
-impl TryFrom<SimulationEvent> for Collect {
+impl TryFrom<SimulationEvent> for CollectPool {
     type Error = eyre::Report;
 
     fn try_from(event: SimulationEvent) -> eyre::Result<Self> {
         match event.event {
-            Event::Collect(e) => Ok(e),
-            _ => Err(eyre::eyre!("Event is not Collect")),
+            Event::CollectPool(e) => Ok(e),
+            _ => Err(eyre::eyre!("Event is not CollectPool")),
         }
     }
 }
