@@ -224,6 +224,18 @@ sol! {
             uint160 sqrtPriceLimitX96;
         }
 
+        struct ExactOutputSingleParams {
+            address tokenIn;
+            address tokenOut;
+            uint24 fee;
+            address recipient;
+            uint256 amountOut;
+            uint256 amountInMaximum;
+            uint160 sqrtPriceLimitX96;
+        }
+
+        function exactOutputSingle(ExactOutputSingleParams calldata params) external payable returns (uint256 amountIn);
+
         function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
     }
 }
@@ -319,5 +331,63 @@ sol! {
         function collect(CollectParams calldata params) external payable returns (uint256 amount0, uint256 amount1);
         function burn(uint256 tokenId) external payable;
         function balanceOf(address account) external view returns (uint256);
+    }
+}
+
+sol! {
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(rpc, abi)]
+    interface IQuoterV2 {
+        function quoteExactInput(bytes memory path, uint256 amountIn)
+            external
+            returns (
+                uint256 amountOut,
+                uint160[] memory sqrtPriceX96AfterList,
+                uint32[] memory initializedTicksCrossedList,
+                uint256 gasEstimate
+            );
+
+        struct QuoteExactInputSingleParams {
+            address tokenIn;
+            address tokenOut;
+            uint256 amountIn;
+            uint24 fee;
+            uint160 sqrtPriceLimitX96;
+        }
+
+        function quoteExactInputSingle(QuoteExactInputSingleParams memory params)
+            external
+            returns (
+                uint256 amountOut,
+                uint160 sqrtPriceX96After,
+                uint32 initializedTicksCrossed,
+                uint256 gasEstimate
+            );
+
+        function quoteExactOutput(bytes memory path, uint256 amountOut)
+            external
+            returns (
+                uint256 amountIn,
+                uint160[] memory sqrtPriceX96AfterList,
+                uint32[] memory initializedTicksCrossedList,
+                uint256 gasEstimate
+            );
+
+        struct QuoteExactOutputSingleParams {
+            address tokenIn;
+            address tokenOut;
+            uint256 amount;
+            uint24 fee;
+            uint160 sqrtPriceLimitX96;
+        }
+
+        function quoteExactOutputSingle(QuoteExactOutputSingleParams memory params)
+            external
+            returns (
+                uint256 amountIn,
+                uint160 sqrtPriceX96After,
+                uint32 initializedTicksCrossed,
+                uint256 gasEstimate
+            );
     }
 }

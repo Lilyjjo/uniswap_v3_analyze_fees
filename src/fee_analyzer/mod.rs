@@ -1,33 +1,37 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
+use crate::{
+    abi::IQuoterV2,
+    chain_interactions::{
+        anvil_connection, approve_token, deploy_and_initialize_pool, initialize_simulation_account,
+        pool_mint, swap::pool_swap,
+    },
+};
 use alloy::{
     node_bindings::AnvilInstance,
     primitives::{Address, U256},
     providers::{layers::AnvilProvider, RootProvider},
     transports::http::{reqwest, Http},
 };
-use contract_interactions::{
-    anvil_connection, approve_token, deploy_and_initialize_pool, initialize_simulation_account,
-    pool_mint, pool_swap,
-};
 use csv_converter::{pool_events, CSVReaderConfig};
-use eyre::{eyre, Context, Result};
-use simulation_events::{find_first_event, EventType, SimulationEvent};
-use tracing::info;
+use eyre::{bail, Context, ContextCompat, Result};
+use simulation_events::{find_first_event, Event, EventType, SimulationEvent};
+use tracing::{error, info, warn};
 
 use crate::abi::{
     ClankerToken::ClankerTokenInstance,
-    INonfungiblePositionManager, ISwapRouter, IUniswapV3Factory,
-    UniswapV3Pool::{Mint, Swap, UniswapV3PoolInstance},
+    INonfungiblePositionManager::{self, IncreaseLiquidity},
+    ISwapRouter,
+    IUniswapV3Factory::{self},
+    UniswapV3Pool::UniswapV3PoolInstance,
     Weth,
 };
 
-mod contract_interactions;
 pub mod csv_converter;
 mod simulation_events;
 
-pub(crate) type HttpClient = Http<reqwest::Client>;
-pub(crate) type ArcAnvilHttpProvider = Arc<AnvilProvider<RootProvider<HttpClient>, HttpClient>>;
+pub type HttpClient = Http<reqwest::Client>;
+pub type ArcAnvilHttpProvider = Arc<AnvilProvider<RootProvider<HttpClient>, HttpClient>>;
 
 #[allow(unused)]
 pub struct PoolAnalyzer {
@@ -44,9 +48,12 @@ pub struct PoolAnalyzer {
         >,
     >,
     swap_router: Arc<ISwapRouter::ISwapRouterInstance<HttpClient, ArcAnvilHttpProvider>>,
+    quoter: Arc<IQuoterV2::IQuoterV2Instance<HttpClient, ArcAnvilHttpProvider>>,
     pool_simulation_events: Vec<SimulationEvent>,
     address_map: HashMap<Address, Address>,
+    token_id_map: HashMap<U256, U256>,
     clanker: Address,
+    swap_account: Address,
 }
 
 pub struct PoolAnalyzerConfig {
@@ -55,6 +62,7 @@ pub struct PoolAnalyzerConfig {
     pub uniswap_v3_factory_address: Address,
     pub uniswap_v3_position_manager_address: Address,
     pub uniswap_v3_swap_router_address: Address,
+    pub uniswap_v3_quoter_address: Address,
     pub weth_address: Address,
     pub config: CSVReaderConfig,
 }
@@ -75,6 +83,10 @@ impl PoolAnalyzer {
         ));
         let swap_router = Arc::new(ISwapRouter::new(
             config.uniswap_v3_swap_router_address,
+            anvil_provider.clone(),
+        ));
+        let quoter = Arc::new(IQuoterV2::new(
+            config.uniswap_v3_quoter_address,
             anvil_provider.clone(),
         ));
         let pool_simulation_events = pool_events(config.config)
@@ -124,6 +136,24 @@ impl PoolAnalyzer {
         )
         .await?;
 
+        // setup swap account, we use the same address for all swaps
+        // because we don't care about swapper PNL in this simulation
+        let swap_account = Address::random();
+        info!(
+            "Swap account amount: {}",
+            U256::from_str("100000000000000000000000000000000000000000").unwrap()
+        );
+        initialize_simulation_account(
+            anvil_provider.clone(),
+            swap_account,
+            U256::from_str("1000000000000000000000000000000000000").unwrap(),
+            Some(clanker_token.clone()),
+            weth.clone(),
+            swap_router.address(),
+            nonfungible_position_manager.address(),
+        )
+        .await?;
+
         Ok(Self {
             anvil,
             anvil_provider,
@@ -133,40 +163,143 @@ impl PoolAnalyzer {
             factory,
             nonfungible_position_manager,
             swap_router,
+            quoter,
             pool_simulation_events,
             address_map,
+            token_id_map: HashMap::new(),
             clanker,
+            swap_account,
         })
     }
 
-    pub async fn run_simulation(&self) -> Result<()> {
-        let mint_event: Mint =
-            find_first_event(&self.pool_simulation_events, EventType::Mint)?.try_into()?;
-        let swap_event: Swap =
-            find_first_event(&self.pool_simulation_events, EventType::Swap)?.try_into()?;
+    pub async fn run_simulation(&mut self) -> Result<()> {
+        // TODO: figure out if cloning here makes sense long term (do we want to run multiple simulations?)
+        let mut event_iter = self.pool_simulation_events.clone().into_iter().peekable();
+        // skip first two event, they are pool created and initialize TODO clean up
+        event_iter.next();
+        event_iter.next();
 
-        let deployer = self
-            .address_map
-            .get(&self.clanker)
-            .ok_or(eyre!("Deployer not found"))?;
+        while let Some(event) = event_iter.next() {
+            info!("event: {:?}", event);
+            match event.event {
+                Event::PoolCreated(create_event) => {
+                    // first event is pool created, pool initialize should be next event
+                    let initialize_event = if let Some(sim_event) = event_iter.peek() {
+                        if sim_event.event.event_type() == EventType::Initialize {
+                            event_iter
+                                .next()
+                                .context("Pool initialize event not found")?
+                        } else {
+                            bail!("Pool initialize event was not event after pool created");
+                        }
+                    } else {
+                        bail!("No events after pool created");
+                    };
+                    deploy_and_initialize_pool(
+                        self.anvil_provider.clone(),
+                        self.factory.clone(),
+                        self.clanker.clone(),
+                        self.weth.address().clone(),
+                        create_event,
+                        initialize_event.try_into()?,
+                    )
+                    .await?;
+                }
+                Event::Initialize(e) => {
+                    error!("Pool initialize event found in wrong positiong: {:?}", e);
+                    bail!("Pool initialize events should be handled by pool created event");
+                }
+                Event::Mint(e) => {
+                    warn!("Minting");
 
-        // mint clanker token
-        pool_mint(
-            self.nonfungible_position_manager.clone(),
-            self.pool.clone(),
-            deployer.clone(),
-            &mint_event,
-        )
-        .await?;
+                    let minter = match self.address_map.get(&event.from) {
+                        Some(mapped_address) => mapped_address.clone(),
+                        None => {
+                            let new_address = Address::random();
+                            self.address_map.insert(event.from, new_address);
 
-        // first swap
-        pool_swap(
-            self.pool.clone(),
-            self.swap_router.clone(),
-            deployer.clone(),
-            &swap_event,
-        )
-        .await?;
+                            initialize_simulation_account(
+                                self.anvil_provider.clone(),
+                                new_address,
+                                U256::from(1e18 as u64),
+                                Some(self.clanker_token.clone()),
+                                self.weth.clone(),
+                                self.swap_router.address(),
+                                self.nonfungible_position_manager.address(),
+                            )
+                            .await?;
+                            info!(
+                                "Original address: {}, new address: {}",
+                                event.from, new_address
+                            );
+                            new_address
+                        }
+                    };
+
+                    let token_id = pool_mint(
+                        self.nonfungible_position_manager.clone(),
+                        self.pool.clone(),
+                        minter,
+                        &e,
+                    )
+                    .await?;
+                    info!("Token ID: {}", token_id);
+
+                    // next event should be liquidity add
+                    let increase_liquidity_event: IncreaseLiquidity =
+                        if let Some(sim_event) = event_iter.peek() {
+                            if sim_event.event.event_type() == EventType::IncreaseLiquidity {
+                                event_iter
+                                    .next()
+                                    .context("Increase liquidity event not found")?
+                                    .try_into()?
+                            } else {
+                                bail!("Increase liquidity event was not event after mint");
+                            }
+                        } else {
+                            bail!("No events after mint");
+                        };
+
+                    // TODO add checks to ensure increase liquidity event matches just processed mint event
+                    // map mint to simulation event token id
+                    self.token_id_map
+                        .insert(increase_liquidity_event.tokenId, token_id);
+                }
+                Event::Swap(e) => {
+                    info!("Swapping");
+                    let swap_address = self.swap_account;
+
+                    pool_swap(
+                        self.pool.clone(),
+                        self.swap_router.clone(),
+                        self.quoter.clone(),
+                        &e,
+                        swap_address,
+                    )
+                    .await?;
+                }
+                Event::Burn(e) => {
+                    warn!("Burn: {:?}", e);
+                    info!("tx hash: {:?}", event.tx_hash);
+                }
+                Event::CollectPool(e) => {
+                    warn!("CollectPool: {:?}", e);
+                    info!("tx hash: {:?}", event.tx_hash);
+                }
+                Event::CollectNpm(e) => {
+                    warn!("CollectNpm: {:?}", e);
+                    info!("tx hash: {:?}", event.tx_hash);
+                }
+                Event::IncreaseLiquidity(e) => {
+                    warn!("IncreaseLiquidity: {:?}", e);
+                    info!("tx hash: {:?}", event.tx_hash);
+                }
+                Event::DecreaseLiquidity(e) => {
+                    warn!("DecreaseLiquidity: {:?}", e);
+                    info!("tx hash: {:?}", event.tx_hash);
+                }
+            }
+        }
 
         Ok(())
     }

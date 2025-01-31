@@ -5,6 +5,7 @@ use tracing::info;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
 mod abi;
+mod chain_interactions;
 mod fee_analyzer;
 
 #[tokio::main]
@@ -41,6 +42,11 @@ async fn main() -> Result<()> {
         .expect("UNISWAP_V3_SWAP_ROUTER_ADDRESS is required")
         .parse()
         .expect("UNISWAP_V3_SWAP_ROUTER_ADDRESS must be a valid address");
+
+    let uniswap_v3_quoter_address: Address = std::env::var("UNISWAP_V3_QUOTER_ADDRESS")
+        .expect("UNISWAP_V3_QUOTER_ADDRESS is required")
+        .parse()
+        .expect("UNISWAP_V3_QUOTER_ADDRESS must be a valid address");
 
     let weth_address: Address = std::env::var("WETH_ADDRESS")
         .expect("WETH_ADDRESS is required")
@@ -92,12 +98,13 @@ async fn main() -> Result<()> {
         pool_created_events_path,
     };
 
-    let pool_analyzer = PoolAnalyzer::initialize(PoolAnalyzerConfig {
+    let mut pool_analyzer = PoolAnalyzer::initialize(PoolAnalyzerConfig {
         http_url,
         fork_block,
         uniswap_v3_factory_address,
         uniswap_v3_position_manager_address,
         uniswap_v3_swap_router_address,
+        uniswap_v3_quoter_address,
         weth_address,
         config: csv_reader_config,
     })

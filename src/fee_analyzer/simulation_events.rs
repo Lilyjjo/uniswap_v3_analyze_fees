@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use alloy::primitives::Address;
+use alloy::primitives::{Address, TxHash};
 use eyre::Result;
 
 use crate::abi::{
@@ -37,6 +37,7 @@ pub(crate) enum EventType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SimulationEvent {
     pub block: u64,
+    pub tx_hash: TxHash,
     pub log_index: u64,
     pub pool_address: Address,
     pub from: Address,
@@ -151,6 +152,39 @@ impl TryFrom<SimulationEvent> for Initialize {
         match event.event {
             Event::Initialize(e) => Ok(e),
             _ => Err(eyre::eyre!("Event is not Initialize")),
+        }
+    }
+}
+
+impl TryFrom<SimulationEvent> for CollectNpm {
+    type Error = eyre::Report;
+
+    fn try_from(event: SimulationEvent) -> eyre::Result<Self> {
+        match event.event {
+            Event::CollectNpm(e) => Ok(e),
+            _ => Err(eyre::eyre!("Event is not CollectNpm")),
+        }
+    }
+}
+
+impl TryFrom<SimulationEvent> for IncreaseLiquidity {
+    type Error = eyre::Report;
+
+    fn try_from(event: SimulationEvent) -> eyre::Result<Self> {
+        match event.event {
+            Event::IncreaseLiquidity(e) => Ok(e),
+            _ => Err(eyre::eyre!("Event is not IncreaseLiquidity")),
+        }
+    }
+}
+
+impl TryFrom<SimulationEvent> for DecreaseLiquidity {
+    type Error = eyre::Report;
+
+    fn try_from(event: SimulationEvent) -> eyre::Result<Self> {
+        match event.event {
+            Event::DecreaseLiquidity(e) => Ok(e),
+            _ => Err(eyre::eyre!("Event is not DecreaseLiquidity")),
         }
     }
 }

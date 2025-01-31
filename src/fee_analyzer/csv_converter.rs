@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use alloy::primitives::{
     aliases::{I24, U24},
-    Address, I256, U160, U256,
+    Address, TxHash, I256, U160, U256,
 };
 use chrono::{DateTime, Utc};
 use eyre::{bail, Result};
@@ -98,7 +98,7 @@ pub(crate) async fn pool_events(config: CSVReaderConfig) -> Result<Vec<Simulatio
     ]
     .concat();
 
-    // sort events by block number and
+    // sort events by blocknumber and log index
     simulation_events.sort();
 
     Ok(simulation_events)
@@ -135,6 +135,7 @@ fn convert_initialize_events(events: Vec<CSVInitializeEvent>) -> Result<Vec<Simu
     Ok(events
         .into_iter()
         .map(|event| SimulationEvent {
+            tx_hash: TxHash::from_str(&event.evt_tx_hash).unwrap(),
             pool_address: Address::from_str(&event.contract_address).unwrap(),
             block: event.evt_block_number,
             log_index: event.evt_index,
@@ -181,6 +182,7 @@ fn convert_pool_created_events(events: Vec<CSVPoolCreatedEvent>) -> Result<Vec<S
     Ok(events
         .into_iter()
         .map(|event| SimulationEvent {
+            tx_hash: TxHash::from_str(&event.evt_tx_hash).unwrap(),
             pool_address: Address::from_str(&event.contract_address).unwrap(),
             block: event.evt_block_number,
             log_index: event.evt_index,
@@ -232,6 +234,7 @@ fn convert_swap_events(events: Vec<CSVSwapEvent>) -> Result<Vec<SimulationEvent>
     Ok(events
         .into_iter()
         .map(|event| SimulationEvent {
+            tx_hash: TxHash::from_str(&event.evt_tx_hash).unwrap(),
             pool_address: Address::from_str(&event.contract_address).unwrap(),
             block: event.evt_block_number,
             log_index: event.evt_index,
@@ -285,6 +288,7 @@ fn convert_mint_events(events: Vec<CSVMintEvent>) -> Result<Vec<SimulationEvent>
     Ok(events
         .into_iter()
         .map(|event| SimulationEvent {
+            tx_hash: TxHash::from_str(&event.evt_tx_hash).unwrap(),
             pool_address: Address::from_str(&event.contract_address).unwrap(),
             block: event.evt_block_number,
             log_index: event.evt_index,
@@ -337,6 +341,7 @@ fn convert_burn_events(events: Vec<CSVBurnEvent>) -> Result<Vec<SimulationEvent>
     Ok(events
         .into_iter()
         .map(|event| SimulationEvent {
+            tx_hash: TxHash::from_str(&event.evt_tx_hash).unwrap(),
             pool_address: Address::from_str(&event.contract_address).unwrap(),
             block: event.evt_block_number,
             log_index: event.evt_index,
@@ -388,6 +393,7 @@ fn convert_collect_pool_events(events: Vec<CSVCollectPoolEvent>) -> Result<Vec<S
     Ok(events
         .into_iter()
         .map(|event| SimulationEvent {
+            tx_hash: TxHash::from_str(&event.evt_tx_hash).unwrap(),
             pool_address: Address::from_str(&event.contract_address).unwrap(),
             block: event.evt_block_number,
             log_index: event.evt_index,
@@ -439,6 +445,7 @@ fn convert_increase_liquidity_events(
     Ok(events
         .into_iter()
         .map(|event| SimulationEvent {
+            tx_hash: TxHash::from_str(&event.evt_tx_hash).unwrap(),
             pool_address: Address::from_str(&event.contract_address).unwrap(),
             block: event.evt_block_number,
             log_index: event.evt_index,
@@ -488,6 +495,7 @@ fn convert_decrease_liquidity_events(
     Ok(events
         .into_iter()
         .map(|event| SimulationEvent {
+            tx_hash: TxHash::from_str(&event.evt_tx_hash).unwrap(),
             pool_address: Address::from_str(&event.contract_address).unwrap(),
             block: event.evt_block_number,
             log_index: event.evt_index,
@@ -535,6 +543,7 @@ fn convert_collect_npm_events(events: Vec<CSVCollectNpmEvent>) -> Result<Vec<Sim
     Ok(events
         .into_iter()
         .map(|event| SimulationEvent {
+            tx_hash: TxHash::from_str(&event.evt_tx_hash).unwrap(),
             pool_address: Address::from_str(&event.contract_address).unwrap(),
             block: event.evt_block_number,
             log_index: event.evt_index,

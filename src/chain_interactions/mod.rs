@@ -2,7 +2,7 @@ use std::{str::FromStr, sync::Arc};
 
 use alloy::{
     node_bindings::{Anvil, AnvilInstance},
-    primitives::{Address, Log as AbiLog, I256, U160, U256},
+    primitives::{ruint::aliases::U256, Address, Log as AbiLog},
     providers::{ext::AnvilApi, layers::AnvilProvider, ProviderBuilder},
     sol_types::SolEvent,
     transports::http::reqwest::Url,
@@ -12,14 +12,15 @@ use tracing::{error, info};
 
 use crate::abi::{
     ClankerToken::{self, ClankerTokenInstance},
-    INonfungiblePositionManager::{CollectParams, INonfungiblePositionManagerInstance, MintParams},
-    ISwapRouter::{ExactInputSingleParams, ISwapRouterInstance},
+    INonfungiblePositionManager::{INonfungiblePositionManagerInstance, MintParams},
     IUniswapV3Factory::{IUniswapV3FactoryInstance, PoolCreated},
-    UniswapV3Pool::{self, Collect, Initialize, Mint, Swap, UniswapV3PoolInstance},
+    UniswapV3Pool::{self, Collect, Initialize, Mint, UniswapV3PoolInstance},
     Weth::WethInstance,
 };
 
-use super::{ArcAnvilHttpProvider, HttpClient};
+pub mod swap;
+
+use crate::fee_analyzer::{ArcAnvilHttpProvider, HttpClient};
 
 pub(crate) async fn anvil_connection(
     http_url: String,
@@ -27,6 +28,8 @@ pub(crate) async fn anvil_connection(
 ) -> Result<(Arc<AnvilInstance>, ArcAnvilHttpProvider)> {
     info!("Connecting to anvil...");
     let parsed_url: Url = http_url.parse()?;
+    info!("Parsed URL: {:?}", parsed_url);
+    info!("Fork block: {:?}", fork_block);
 
     let anvil = Arc::new(
         Anvil::new()
@@ -34,6 +37,8 @@ pub(crate) async fn anvil_connection(
             .fork_block_number(fork_block)
             .spawn(),
     );
+
+    info!("Anvil endpoint: {:?}", anvil.endpoint());
 
     let provider = ProviderBuilder::new().on_http(anvil.endpoint().parse().unwrap());
     let anvil_provider = Arc::new(AnvilProvider::new(provider, anvil.clone()));
@@ -143,7 +148,7 @@ pub(crate) async fn pool_mint(
     pool: Arc<UniswapV3PoolInstance<HttpClient, ArcAnvilHttpProvider>>,
     minter: Address,
     mint_event: &Mint,
-) -> Result<()> {
+) -> Result<U256> {
     info!("minting");
 
     let token0 = pool.token0().call().await?._0;
@@ -164,6 +169,15 @@ pub(crate) async fn pool_mint(
         recipient: minter,
         deadline: U256::from_str("8737924142").unwrap(), // timestamp need to just be in future
     };
+
+    // simulate mint first to grab result
+    let token_id = position_manager
+        .mint(mint_params.clone())
+        .from(minter)
+        .call()
+        .await
+        .context("Failed to simulate mint")?
+        .tokenId;
 
     let receipt = position_manager
         .mint(mint_params)
@@ -205,82 +219,7 @@ pub(crate) async fn pool_mint(
         bail!("Mismatch in mint outcomes");
     }
 
-    Ok(())
-}
-
-pub(crate) async fn pool_swap(
-    pool: Arc<UniswapV3PoolInstance<HttpClient, ArcAnvilHttpProvider>>,
-    swap_router: Arc<ISwapRouterInstance<HttpClient, ArcAnvilHttpProvider>>,
-    swapper: Address,
-    swap_event: &Swap,
-) -> Result<()> {
-    info!("swapping");
-
-    // grab token ordering
-    let token_0 = pool.token0().call().await?._0;
-    let token_1 = pool.token1().call().await?._0;
-    let fee = pool.fee().call().await?._0;
-
-    // get token in/out and amount in
-    let (token_in, token_out, amount_in) =
-        if swap_event.amount0 < I256::from_str("0").context("failed to create zero I25 value")? {
-            (token_1, token_0, swap_event.amount1.abs())
-        } else {
-            (token_0, token_1, swap_event.amount0.abs())
-        };
-
-    // copy swap params
-    let swap_params = ExactInputSingleParams {
-        tokenIn: token_in,
-        tokenOut: token_out,
-        fee,
-        recipient: swapper,
-        amountIn: U256::try_from(amount_in).context("failed to convert amount_in to U256")?,
-        amountOutMinimum: U256::from(0),
-        sqrtPriceLimitX96: U160::from(0),
-    };
-
-    let receipt = swap_router
-        .exactInputSingle(swap_params)
-        .from(swapper)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    if !receipt.inner.status() {
-        bail!("Failed to swap");
-    }
-
-    let swap_log = receipt
-        .inner
-        .logs()
-        .iter()
-        .find(|log| log.inner.topics()[0] == Swap::SIGNATURE_HASH)
-        .and_then(|log| {
-            let log = AbiLog::new(
-                log.address(),
-                log.topics().to_vec(),
-                log.data().data.clone(),
-            )
-            .unwrap_or_default();
-            Swap::decode_log(&log, true).ok()
-        })
-        .context("Failed to decode swap event")?;
-
-    // check swap outcomes
-    if swap_log.amount0 != swap_event.amount0
-        || swap_log.amount1 != swap_event.amount1
-        || swap_log.sqrtPriceX96 != swap_event.sqrtPriceX96
-        || swap_log.liquidity != swap_event.liquidity
-        || swap_log.tick != swap_event.tick
-    {
-        error!("Mismatch in swap outcomes");
-        error!("swap event: {:?}", swap_event);
-        error!("swap log: {:?}", swap_log);
-        bail!("Mismatch in swap outcomes");
-    }
-
-    Ok(())
+    Ok(token_id)
 }
 
 pub(crate) async fn pool_collect(
@@ -291,10 +230,6 @@ pub(crate) async fn pool_collect(
     amount1: U256,
     collect_event: &Collect,
 ) -> Result<()> {
-    let token0 = pool.token0().call().await?._0;
-    let token1 = pool.token1().call().await?._0;
-    let fee = pool.fee().call().await?._0;
-
     Ok(())
 }
 
@@ -404,7 +339,6 @@ pub(crate) async fn approve_weth(
     if !receipt.inner.status() {
         bail!("Failed to approve weth for position manager");
     }
-
     Ok(())
 }
 
