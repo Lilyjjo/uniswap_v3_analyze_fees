@@ -2,10 +2,10 @@
 
 Note: this repo is a work in progress and is not finished yet
 
-This repo analyzes which LP positions are making the most fees on a target Uniswap V3 pool using historial data about activity on the pool.
+This repo analyzes which LP positions are making the most fees on a target Uniswap V3 pool using historial event data about activity on the pool.
 
 ### Progress
-- [x] Reads in historical data from csv files into memory
+- [x] Reads in historical event data from csv files into memory
 - [x] Parses the data into a format that can be used by the program
 - [x] Forks the http endpoint's target chain at the target block number and connects to it with Anvil (Uniswap V3 Factory and Weth need to be deployed by this block number)
 - [ ] Simulates the pool's activity on the forked endpoint (almost done)
