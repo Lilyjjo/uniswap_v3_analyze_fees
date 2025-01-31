@@ -161,15 +161,6 @@ async fn pool_swap_exact_input(
         sqrtPriceLimitX96: U160::from(0),
     };
 
-    info!("{} simulating swap: {:?}", swapper, exact_input_params);
-
-    // simulate swap to fail with error printed out
-    swap_router
-        .exactInputSingle(exact_input_params.clone())
-        .from(swapper)
-        .call()
-        .await?;
-
     let mut attempts = 0;
     let max_attempts = 4;
     let mut receipt = None;
