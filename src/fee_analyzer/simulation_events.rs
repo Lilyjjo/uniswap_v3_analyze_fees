@@ -17,6 +17,13 @@ pub struct IncreaseLiquidityWithParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecreaseLiquidityWithParams {
+    pub amount_0_min: U256,
+    pub amount_1_min: U256,
+    pub event: DecreaseLiquidity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Event {
     PoolCreated(PoolCreated),
     Mint(Mint),
@@ -25,7 +32,7 @@ pub(crate) enum Event {
     CollectPool(CollectPool),
     CollectNpm(CollectNpm),
     IncreaseLiquidity(IncreaseLiquidityWithParams),
-    DecreaseLiquidity(DecreaseLiquidity),
+    DecreaseLiquidity(DecreaseLiquidityWithParams),
     Initialize(Initialize),
 }
 
@@ -186,7 +193,7 @@ impl TryFrom<SimulationEvent> for IncreaseLiquidityWithParams {
     }
 }
 
-impl TryFrom<SimulationEvent> for DecreaseLiquidity {
+impl TryFrom<SimulationEvent> for DecreaseLiquidityWithParams {
     type Error = eyre::Report;
 
     fn try_from(event: SimulationEvent) -> eyre::Result<Self> {

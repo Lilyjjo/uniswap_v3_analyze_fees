@@ -9,7 +9,9 @@ use eyre::{bail, Result};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use super::simulation_events::{Event, IncreaseLiquidityWithParams, SimulationEvent};
+use super::simulation_events::{
+    DecreaseLiquidityWithParams, Event, IncreaseLiquidityWithParams, SimulationEvent,
+};
 use crate::abi::{
     INonfungiblePositionManager::{Collect as CollectNpm, DecreaseLiquidity, IncreaseLiquidity},
     IUniswapV3Factory::PoolCreated,
@@ -476,10 +478,12 @@ struct CSVDecreaseLiquidityEvent {
     evt_index: u64,
     evt_block_time: String,
     evt_block_number: u64,
-    tokenId: String,
-    liquidity: String,
     amount0: String,
     amount1: String,
+    liquidity: String,
+    tokenId: String,
+    amount0Min: String,
+    amount1Min: String,
 }
 
 fn read_decrease_liquidity_events(path: &str) -> Result<Vec<CSVDecreaseLiquidityEvent>> {
@@ -506,11 +510,15 @@ fn convert_decrease_liquidity_events(
             block: event.evt_block_number,
             log_index: event.evt_index,
             from: Address::from_str(&event.evt_tx_from).unwrap(),
-            event: Event::DecreaseLiquidity(DecreaseLiquidity {
-                tokenId: U256::from_str(&event.tokenId).unwrap(),
-                liquidity: u128::from_str(&event.liquidity).unwrap(),
-                amount0: U256::from_str(&event.amount0).unwrap(),
-                amount1: U256::from_str(&event.amount1).unwrap(),
+            event: Event::DecreaseLiquidity(DecreaseLiquidityWithParams {
+                amount_0_min: U256::from_str(&event.amount0Min).unwrap(),
+                amount_1_min: U256::from_str(&event.amount1Min).unwrap(),
+                event: DecreaseLiquidity {
+                    tokenId: U256::from_str(&event.tokenId).unwrap(),
+                    liquidity: u128::from_str(&event.liquidity).unwrap(),
+                    amount0: U256::from_str(&event.amount0).unwrap(),
+                    amount1: U256::from_str(&event.amount1).unwrap(),
+                },
             }),
         })
         .collect())
