@@ -9,7 +9,7 @@ use eyre::{bail, Result};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use super::simulation_events::{Event, SimulationEvent};
+use super::simulation_events::{Event, IncreaseLiquidityWithParams, SimulationEvent};
 use crate::abi::{
     INonfungiblePositionManager::{Collect as CollectNpm, DecreaseLiquidity, IncreaseLiquidity},
     IUniswapV3Factory::PoolCreated,
@@ -424,6 +424,8 @@ struct CSVIncreaseLiquidityEvent {
     liquidity: String,
     amount0: String,
     amount1: String,
+    amount0Desired: String,
+    amount1Desired: String,
 }
 
 fn read_increase_liquidity_events(path: &str) -> Result<Vec<CSVIncreaseLiquidityEvent>> {
@@ -450,11 +452,15 @@ fn convert_increase_liquidity_events(
             block: event.evt_block_number,
             log_index: event.evt_index,
             from: Address::from_str(&event.evt_tx_from).unwrap(),
-            event: Event::IncreaseLiquidity(IncreaseLiquidity {
-                tokenId: U256::from_str(&event.tokenId).unwrap(),
-                liquidity: u128::from_str(&event.liquidity).unwrap(),
-                amount0: U256::from_str(&event.amount0).unwrap(),
-                amount1: U256::from_str(&event.amount1).unwrap(),
+            event: Event::IncreaseLiquidity(IncreaseLiquidityWithParams {
+                amount_0_desired: U256::from_str(&event.amount0Desired).unwrap(),
+                amount_1_desired: U256::from_str(&event.amount1Desired).unwrap(),
+                event: IncreaseLiquidity {
+                    tokenId: U256::from_str(&event.tokenId).unwrap(),
+                    liquidity: u128::from_str(&event.liquidity).unwrap(),
+                    amount0: U256::from_str(&event.amount0).unwrap(),
+                    amount1: U256::from_str(&event.amount1).unwrap(),
+                },
             }),
         })
         .collect())

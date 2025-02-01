@@ -6,7 +6,7 @@ use alloy::{
     sol_types::SolEvent,
 };
 use eyre::{bail, Context, ContextCompat, Result};
-use tracing::{error, info};
+use tracing::error;
 
 use crate::{
     abi::{
@@ -148,9 +148,6 @@ async fn pool_swap_exact_input(
     swap_event: &Swap,
     swap_params: &SwapParams,
 ) -> Result<()> {
-    info!("swapping");
-
-    // copy swap params
     let exact_input_params = ExactInputSingleParams {
         tokenIn: swap_params.token_in,
         tokenOut: swap_params.token_out,

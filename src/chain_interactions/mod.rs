@@ -2,25 +2,33 @@ use std::{str::FromStr, sync::Arc};
 
 use alloy::{
     node_bindings::{Anvil, AnvilInstance},
-    primitives::{ruint::aliases::U256, Address, Log as AbiLog},
+    primitives::{aliases::U24, ruint::aliases::U256, Address, Log as AbiLog},
     providers::{ext::AnvilApi, layers::AnvilProvider, ProviderBuilder},
     sol_types::SolEvent,
     transports::http::reqwest::Url,
 };
-use eyre::{bail, Context, ContextCompat, Result};
+use eyre::{bail, ContextCompat, Result};
 use tracing::{error, info};
 
 use crate::abi::{
     ClankerToken::{self, ClankerTokenInstance},
-    INonfungiblePositionManager::{INonfungiblePositionManagerInstance, MintParams},
+    INonfungiblePositionManager::INonfungiblePositionManagerInstance,
     IUniswapV3Factory::{IUniswapV3FactoryInstance, PoolCreated},
-    UniswapV3Pool::{self, Collect, Initialize, Mint, UniswapV3PoolInstance},
+    UniswapV3Pool::{self, Collect, Initialize, UniswapV3PoolInstance},
     Weth::WethInstance,
 };
 
-pub mod swap;
+pub(crate) mod mint;
+pub(crate) mod swap;
 
 use crate::fee_analyzer::{ArcAnvilHttpProvider, HttpClient};
+
+pub(crate) struct PoolConfig {
+    token0: Address,
+    token1: Address,
+    fee: U24,
+    clanker_is_token0: bool,
+}
 
 pub(crate) async fn anvil_connection(
     http_url: String,
@@ -56,6 +64,7 @@ pub(crate) async fn deploy_and_initialize_pool(
 ) -> Result<(
     Arc<UniswapV3PoolInstance<HttpClient, ArcAnvilHttpProvider>>,
     Arc<ClankerTokenInstance<HttpClient, ArcAnvilHttpProvider>>,
+    PoolConfig,
 )> {
     // deploy clanker token with token0/token1 in same order
     let clanker_token_address = if pool_create_event.token0 == weth {
@@ -73,15 +82,25 @@ pub(crate) async fn deploy_and_initialize_pool(
     .await?;
 
     // sort tokens
-    let (token0, token1) = if pool_create_event.token0 == weth {
-        (weth, clanker_token.address().clone())
+    let pool_config = if pool_create_event.token0 == weth {
+        PoolConfig {
+            token0: weth,
+            token1: clanker_token.address().clone(),
+            fee: pool_create_event.fee,
+            clanker_is_token0: false,
+        }
     } else {
-        (clanker_token.address().clone(), weth)
+        PoolConfig {
+            token0: clanker_token.address().clone(),
+            token1: weth,
+            fee: pool_create_event.fee,
+            clanker_is_token0: true,
+        }
     };
 
     // deploy pool
     let receipt = uniswap_factory
-        .createPool(token0, token1, pool_create_event.fee)
+        .createPool(pool_config.token0, pool_config.token1, pool_config.fee)
         .from(deployer)
         .send()
         .await?
@@ -94,7 +113,7 @@ pub(crate) async fn deploy_and_initialize_pool(
 
     // fetch pool
     let pool = uniswap_factory
-        .getPool(token0, token1, pool_create_event.fee)
+        .getPool(pool_config.token0, pool_config.token1, pool_config.fee)
         .from(deployer)
         .call()
         .await?;
@@ -140,86 +159,7 @@ pub(crate) async fn deploy_and_initialize_pool(
     }
 
     info!("pool initialized");
-    Ok((pool, clanker_token))
-}
-
-pub(crate) async fn pool_mint(
-    position_manager: Arc<INonfungiblePositionManagerInstance<HttpClient, ArcAnvilHttpProvider>>,
-    pool: Arc<UniswapV3PoolInstance<HttpClient, ArcAnvilHttpProvider>>,
-    minter: Address,
-    mint_event: &Mint,
-) -> Result<U256> {
-    info!("minting");
-
-    let token0 = pool.token0().call().await?._0;
-    let token1 = pool.token1().call().await?._0;
-    let fee = pool.fee().call().await?._0;
-
-    // copy mint params
-    let mint_params = MintParams {
-        token0,
-        token1,
-        fee,
-        tickLower: mint_event.tickLower,
-        tickUpper: mint_event.tickUpper,
-        amount0Desired: mint_event.amount0,
-        amount1Desired: mint_event.amount1,
-        amount0Min: U256::from(0),
-        amount1Min: U256::from(0),
-        recipient: minter,
-        deadline: U256::from_str("8737924142").unwrap(), // timestamp need to just be in future
-    };
-
-    // simulate mint first to grab result
-    let token_id = position_manager
-        .mint(mint_params.clone())
-        .from(minter)
-        .call()
-        .await
-        .context("Failed to simulate mint")?
-        .tokenId;
-
-    let receipt = position_manager
-        .mint(mint_params)
-        .from(minter)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    if !receipt.inner.status() {
-        bail!("Failed to mint");
-    }
-
-    let mint_log = receipt
-        .inner
-        .logs()
-        .iter()
-        .find(|log| log.inner.topics()[0] == Mint::SIGNATURE_HASH)
-        .and_then(|log| {
-            let log = AbiLog::new(
-                log.address(),
-                log.topics().to_vec(),
-                log.data().data.clone(),
-            )
-            .unwrap_or_default();
-            Mint::decode_log(&log, true).ok()
-        })
-        .context("Failed to decode mint event")?;
-
-    // check mint outcomes
-    if mint_log.amount0 != mint_event.amount0
-        || mint_log.amount1 != mint_event.amount1
-        || mint_log.tickLower != mint_event.tickLower
-        || mint_log.tickUpper != mint_event.tickUpper
-        || mint_log.amount != mint_event.amount
-    {
-        error!("Mismatch in mint outcomes");
-        error!("mint event: {:?}", mint_event);
-        error!("mint log: {:?}", mint_log);
-        bail!("Mismatch in mint outcomes");
-    }
-
-    Ok(token_id)
+    Ok((pool, clanker_token, pool_config))
 }
 
 pub(crate) async fn pool_collect(
@@ -241,23 +181,21 @@ pub(crate) async fn pool_collect(
 pub(crate) async fn initialize_simulation_account(
     anvil_provider: ArcAnvilHttpProvider,
     address: Address,
-    amount: U256,
     token: Option<Arc<ClankerTokenInstance<HttpClient, ArcAnvilHttpProvider>>>,
     weth: Arc<WethInstance<HttpClient, ArcAnvilHttpProvider>>,
     swap_router: &Address,
     position_manager: &Address,
 ) -> Result<()> {
-    anvil_provider.anvil_set_balance(address, amount).await?;
+    let initial_eth_amount = U256::from_str("1000000000000000000000000000000000000").unwrap();
+    anvil_provider
+        .anvil_set_balance(address, initial_eth_amount)
+        .await?;
     anvil_provider.anvil_impersonate_account(address).await?;
 
     // convert half of the native token to WETH
     weth.deposit()
         .from(address)
-        .value(
-            amount
-                .checked_div(U256::from(2))
-                .context("Failed to divide amount by 2")?,
-        )
+        .value(initial_eth_amount.checked_div(U256::from(2)).unwrap())
         .send()
         .await?
         .watch()

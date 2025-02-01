@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use alloy::primitives::{Address, TxHash};
+use alloy::primitives::{Address, TxHash, U256};
 use eyre::Result;
 
 use crate::abi::{
@@ -8,6 +8,14 @@ use crate::abi::{
     IUniswapV3Factory::PoolCreated,
     UniswapV3Pool::{Burn, Collect as CollectPool, Initialize, Mint, Swap},
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncreaseLiquidityWithParams {
+    pub amount_0_desired: U256,
+    pub amount_1_desired: U256,
+    pub event: IncreaseLiquidity,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Event {
     PoolCreated(PoolCreated),
@@ -16,7 +24,7 @@ pub(crate) enum Event {
     Swap(Swap),
     CollectPool(CollectPool),
     CollectNpm(CollectNpm),
-    IncreaseLiquidity(IncreaseLiquidity),
+    IncreaseLiquidity(IncreaseLiquidityWithParams),
     DecreaseLiquidity(DecreaseLiquidity),
     Initialize(Initialize),
 }
@@ -167,7 +175,7 @@ impl TryFrom<SimulationEvent> for CollectNpm {
     }
 }
 
-impl TryFrom<SimulationEvent> for IncreaseLiquidity {
+impl TryFrom<SimulationEvent> for IncreaseLiquidityWithParams {
     type Error = eyre::Report;
 
     fn try_from(event: SimulationEvent) -> eyre::Result<Self> {

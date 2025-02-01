@@ -1,10 +1,12 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     abi::IQuoterV2,
     chain_interactions::{
         anvil_connection, approve_token, deploy_and_initialize_pool, initialize_simulation_account,
-        pool_mint, swap::pool_swap,
+        mint::{initialize_mint_account, pool_mint},
+        swap::pool_swap,
+        PoolConfig,
     },
 };
 use alloy::{
@@ -15,12 +17,14 @@ use alloy::{
 };
 use csv_converter::{pool_events, CSVReaderConfig};
 use eyre::{bail, Context, ContextCompat, Result};
-use simulation_events::{find_first_event, Event, EventType, SimulationEvent};
+use simulation_events::{
+    find_first_event, Event, EventType, IncreaseLiquidityWithParams, SimulationEvent,
+};
 use tracing::{error, info, warn};
 
 use crate::abi::{
     ClankerToken::ClankerTokenInstance,
-    INonfungiblePositionManager::{self, IncreaseLiquidity},
+    INonfungiblePositionManager::{self},
     ISwapRouter,
     IUniswapV3Factory::{self},
     UniswapV3Pool::UniswapV3PoolInstance,
@@ -28,7 +32,7 @@ use crate::abi::{
 };
 
 pub mod csv_converter;
-mod simulation_events;
+pub(crate) mod simulation_events;
 
 pub type HttpClient = Http<reqwest::Client>;
 pub type ArcAnvilHttpProvider = Arc<AnvilProvider<RootProvider<HttpClient>, HttpClient>>;
@@ -54,6 +58,7 @@ pub struct PoolAnalyzer {
     token_id_map: HashMap<U256, U256>,
     clanker: Address,
     swap_account: Address,
+    pool_config: PoolConfig,
 }
 
 pub struct PoolAnalyzerConfig {
@@ -108,7 +113,6 @@ impl PoolAnalyzer {
         initialize_simulation_account(
             anvil_provider.clone(),
             deployer,
-            U256::from(1e18 as u64),
             None,
             weth.clone(),
             swap_router.address(),
@@ -117,7 +121,7 @@ impl PoolAnalyzer {
         .await?;
 
         // deploy pool
-        let (pool, clanker_token) = deploy_and_initialize_pool(
+        let (pool, clanker_token, pool_config) = deploy_and_initialize_pool(
             anvil_provider.clone(),
             factory.clone(),
             deployer,
@@ -139,14 +143,9 @@ impl PoolAnalyzer {
         // setup swap account, we use the same address for all swaps
         // because we don't care about swapper PNL in this simulation
         let swap_account = Address::random();
-        info!(
-            "Swap account amount: {}",
-            U256::from_str("100000000000000000000000000000000000000000").unwrap()
-        );
         initialize_simulation_account(
             anvil_provider.clone(),
             swap_account,
-            U256::from_str("1000000000000000000000000000000000000").unwrap(),
             Some(clanker_token.clone()),
             weth.clone(),
             swap_router.address(),
@@ -169,6 +168,7 @@ impl PoolAnalyzer {
             token_id_map: HashMap::new(),
             clanker,
             swap_account,
+            pool_config,
         })
     }
 
@@ -178,9 +178,12 @@ impl PoolAnalyzer {
         // skip first two event, they are pool created and initialize TODO clean up
         event_iter.next();
         event_iter.next();
+        let mut event_count = 0;
 
         while let Some(event) = event_iter.next() {
+            info!("event: {:?}", event_count);
             info!("event: {:?}", event);
+            event_count += 1;
             match event.event {
                 Event::PoolCreated(create_event) => {
                     // first event is pool created, pool initialize should be next event
@@ -215,38 +218,29 @@ impl PoolAnalyzer {
                     let minter = match self.address_map.get(&event.from) {
                         Some(mapped_address) => mapped_address.clone(),
                         None => {
-                            let new_address = Address::random();
-                            self.address_map.insert(event.from, new_address);
-
-                            initialize_simulation_account(
+                            let new_minter = initialize_mint_account(
                                 self.anvil_provider.clone(),
-                                new_address,
-                                U256::from(1e18 as u64),
-                                Some(self.clanker_token.clone()),
+                                self.clanker_token.clone(),
                                 self.weth.clone(),
                                 self.swap_router.address(),
+                                &self.swap_account,
                                 self.nonfungible_position_manager.address(),
+                                &e,
+                                &self.pool_config,
                             )
                             .await?;
+                            self.address_map.insert(event.from, new_minter);
+
                             info!(
                                 "Original address: {}, new address: {}",
-                                event.from, new_address
+                                event.from, new_minter
                             );
-                            new_address
+                            new_minter
                         }
                     };
 
-                    let token_id = pool_mint(
-                        self.nonfungible_position_manager.clone(),
-                        self.pool.clone(),
-                        minter,
-                        &e,
-                    )
-                    .await?;
-                    info!("Token ID: {}", token_id);
-
                     // next event should be liquidity add
-                    let increase_liquidity_event: IncreaseLiquidity =
+                    let increase_liquidity_event: IncreaseLiquidityWithParams =
                         if let Some(sim_event) = event_iter.peek() {
                             if sim_event.event.event_type() == EventType::IncreaseLiquidity {
                                 event_iter
@@ -260,13 +254,22 @@ impl PoolAnalyzer {
                             bail!("No events after mint");
                         };
 
+                    let token_id = pool_mint(
+                        self.nonfungible_position_manager.clone(),
+                        &self.pool_config,
+                        minter,
+                        &e,
+                        &increase_liquidity_event,
+                    )
+                    .await?;
+                    info!("Token ID: {}", token_id);
+
                     // TODO add checks to ensure increase liquidity event matches just processed mint event
-                    // map mint to simulation event token id
                     self.token_id_map
-                        .insert(increase_liquidity_event.tokenId, token_id);
+                        .insert(increase_liquidity_event.event.tokenId, token_id);
                 }
                 Event::Swap(e) => {
-                    info!("Swapping");
+                    info!("swapping");
                     let swap_address = self.swap_account;
 
                     pool_swap(
