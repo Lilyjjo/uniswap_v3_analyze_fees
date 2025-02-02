@@ -2,6 +2,7 @@ use std::{str::FromStr, sync::Arc};
 
 use alloy::{
     primitives::{Address, Log as AbiLog, U256},
+    rpc::types::TransactionReceipt,
     sol_types::SolEvent,
 };
 use eyre::{bail, Context, ContextCompat, Result};
@@ -10,7 +11,9 @@ use tracing::error;
 use crate::{
     abi::{
         ClankerToken::ClankerTokenInstance,
-        INonfungiblePositionManager::{INonfungiblePositionManagerInstance, MintParams},
+        INonfungiblePositionManager::{
+            INonfungiblePositionManagerInstance, IncreaseLiquidityParams, MintParams,
+        },
         UniswapV3Pool::Mint,
         Weth::WethInstance,
     },
@@ -45,17 +48,36 @@ pub(crate) async fn initialize_mint_account(
     .await?;
 
     // send needed clanker tokens for mint
+    send_clanker_tokens(token, pool_config, new_minter, swap_account, mint).await?;
+
+    Ok(new_minter)
+}
+
+pub(crate) async fn send_clanker_tokens(
+    token: Arc<ClankerTokenInstance<HttpClient, ArcAnvilHttpProvider>>,
+    pool_config: &PoolConfig,
+    minter: Address,
+    swap_account: &Address,
+    mint_event: &Mint,
+) -> Result<()> {
+    // send needed clanker tokens for mint
     let transfer = if pool_config.clanker_is_token0 {
+        if mint_event.amount0 == U256::ZERO {
+            return Ok(());
+        }
         token
-            .transfer(new_minter, mint.amount0)
+            .transfer(minter, mint_event.amount0)
             .from(swap_account.clone())
             .send()
             .await?
             .get_receipt()
             .await?
     } else {
+        if mint_event.amount1 == U256::ZERO {
+            return Ok(());
+        }
         token
-            .transfer(new_minter, mint.amount1)
+            .transfer(minter, mint_event.amount1)
             .from(swap_account.clone())
             .send()
             .await?
@@ -68,7 +90,7 @@ pub(crate) async fn initialize_mint_account(
         bail!("Failed to transfer clanker tokens");
     }
 
-    Ok(new_minter)
+    Ok(())
 }
 
 pub(crate) async fn pool_mint(
@@ -112,6 +134,47 @@ pub(crate) async fn pool_mint(
         bail!("Failed to mint");
     }
 
+    check_mint_outcomes(mint_event, &receipt).await?;
+
+    Ok(token_id)
+}
+
+pub(crate) async fn pool_increase_liquidity(
+    position_manager: Arc<INonfungiblePositionManagerInstance<HttpClient, ArcAnvilHttpProvider>>,
+    minter: Address,
+    mint_event: &Mint,
+    increase_liquidity_event: &IncreaseLiquidityWithParams,
+    token_id: U256,
+) -> Result<()> {
+    let increase_liquidity_params = IncreaseLiquidityParams {
+        tokenId: token_id,
+        amount0Desired: increase_liquidity_event.amount_0_desired,
+        amount1Desired: increase_liquidity_event.amount_1_desired,
+        amount0Min: U256::ZERO,
+        amount1Min: U256::ZERO,
+        deadline: U256::from_str("8737924142").unwrap(),
+    };
+
+    let receipt = position_manager
+        .increaseLiquidity(increase_liquidity_params)
+        .from(minter)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    if !receipt.inner.status() {
+        //let trace = alloy::providers::ext::TraceApi::trace_transaction(&anvil_provider, receipt.transaction_hash).await?;
+        //warn!("trace: {:?}", trace);
+        bail!("Failed to increase liquidity");
+    }
+
+    // check increase liquidity outcomes
+    check_mint_outcomes(mint_event, &receipt).await?;
+
+    Ok(())
+}
+
+async fn check_mint_outcomes(mint_event: &Mint, receipt: &TransactionReceipt) -> Result<()> {
     let mint_log = receipt
         .inner
         .logs()
@@ -151,5 +214,5 @@ pub(crate) async fn pool_mint(
         bail!("Mismatch in mint outcomes");
     }
 
-    Ok(token_id)
+    Ok(())
 }

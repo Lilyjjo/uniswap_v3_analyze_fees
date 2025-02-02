@@ -4,7 +4,7 @@ use crate::{
     abi::IQuoterV2,
     chain_interactions::{
         anvil_connection, approve_token, deploy_and_initialize_pool, initialize_simulation_account,
-        mint::{initialize_mint_account, pool_mint},
+        mint::{initialize_mint_account, pool_increase_liquidity, pool_mint, send_clanker_tokens},
         swap::pool_swap,
         PoolConfig,
     },
@@ -153,6 +153,17 @@ impl PoolAnalyzer {
         )
         .await?;
 
+        // send all clanker tokens to swap account, tokens needed for minting
+        // are pulled from this account on a per mint basis
+        let total_supply = clanker_token.totalSupply().call().await?._0;
+        clanker_token
+            .transfer(swap_account, total_supply)
+            .from(deployer.clone())
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+
         Ok(Self {
             anvil,
             anvil_provider,
@@ -216,7 +227,18 @@ impl PoolAnalyzer {
                     warn!("Minting");
 
                     let minter = match self.address_map.get(&event.from) {
-                        Some(mapped_address) => mapped_address.clone(),
+                        // account already exists, just send needed mint tokens
+                        Some(mapped_address) => {
+                            send_clanker_tokens(
+                                self.clanker_token.clone(),
+                                &self.pool_config,
+                                mapped_address.clone(),
+                                &self.swap_account,
+                                &e,
+                            )
+                            .await?;
+                            mapped_address.clone()
+                        }
                         None => {
                             let new_minter = initialize_mint_account(
                                 self.anvil_provider.clone(),
@@ -254,19 +276,36 @@ impl PoolAnalyzer {
                             bail!("No events after mint");
                         };
 
-                    let token_id = pool_mint(
-                        self.nonfungible_position_manager.clone(),
-                        &self.pool_config,
-                        minter,
-                        &e,
-                        &increase_liquidity_event,
-                    )
-                    .await?;
-                    info!("Token ID: {}", token_id);
+                    // check if token id already exists, this means that it's a increaseLiqiudity call
+                    // instead of a fresh nft mint, both have the same events emitted
+                    if let Some(token_id) = self
+                        .token_id_map
+                        .get(&increase_liquidity_event.event.tokenId)
+                    {
+                        pool_increase_liquidity(
+                            self.nonfungible_position_manager.clone(),
+                            minter,
+                            &e,
+                            &increase_liquidity_event,
+                            token_id.clone(),
+                        )
+                        .await?;
+                    } else {
+                        // token id not found, this is a fresh mint
+                        let token_id = pool_mint(
+                            self.nonfungible_position_manager.clone(),
+                            &self.pool_config,
+                            minter,
+                            &e,
+                            &increase_liquidity_event,
+                        )
+                        .await?;
+                        info!("new token id: {}", token_id);
 
-                    // TODO add checks to ensure increase liquidity event matches just processed mint event
-                    self.token_id_map
-                        .insert(increase_liquidity_event.event.tokenId, token_id);
+                        // TODO add checks to ensure increase liquidity event matches just processed mint event
+                        self.token_id_map
+                            .insert(increase_liquidity_event.event.tokenId, token_id);
+                    }
                 }
                 Event::Swap(e) => {
                     info!("swapping");

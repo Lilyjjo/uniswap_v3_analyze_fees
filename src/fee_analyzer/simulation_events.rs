@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, fmt};
 
 use alloy::primitives::{Address, TxHash, U256};
 use eyre::Result;
@@ -201,5 +201,49 @@ impl TryFrom<SimulationEvent> for DecreaseLiquidityWithParams {
             Event::DecreaseLiquidity(e) => Ok(e),
             _ => Err(eyre::eyre!("Event is not DecreaseLiquidity")),
         }
+    }
+}
+
+// Implement Display trait for pretty printing
+impl fmt::Display for Mint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "\nMint Event:\n\
+             ├─ Sender:     {}\n\
+             ├─ Owner:      {}\n\
+             ├─ Tick Range: [{}, {}]\n\
+             ├─ Amount:     {}\n\
+             ├─ Amount0:    {}\n\
+             └─ Amount1:    {}\n",
+            self.sender,
+            self.owner,
+            self.tickLower,
+            self.tickUpper,
+            self.amount,
+            self.amount0,
+            self.amount1,
+        )
+    }
+}
+
+impl fmt::Display for IncreaseLiquidityWithParams {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "\nIncrease Liquidity Event:\n\
+             ├─ Amount0Desired: {}\n\
+             ├─ Amount1Desired: {}\n\
+             ├─ Amount0:    {}\n\
+             ├─ Amount1:    {}\n\
+             ├─ Liquidity:      {}\n\
+             └─ Token ID:      {}\n",
+            self.amount_0_desired,
+            self.amount_1_desired,
+            self.event.amount0,
+            self.event.amount1,
+            self.event.liquidity,
+            self.event.tokenId,
+        )
     }
 }
