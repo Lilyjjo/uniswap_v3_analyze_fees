@@ -3,7 +3,9 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     abi::IQuoterV2,
     chain_interactions::{
-        anvil_connection, approve_token, deploy_and_initialize_pool, initialize_simulation_account,
+        anvil_connection, approve_token,
+        burn::pool_burn,
+        deploy_and_initialize_pool, initialize_simulation_account,
         mint::{initialize_mint_account, pool_increase_liquidity, pool_mint, send_clanker_tokens},
         swap::pool_swap,
         PoolConfig,
@@ -18,7 +20,8 @@ use alloy::{
 use csv_converter::{pool_events, CSVReaderConfig};
 use eyre::{bail, Context, ContextCompat, Result};
 use simulation_events::{
-    find_first_event, Event, EventType, IncreaseLiquidityWithParams, SimulationEvent,
+    find_first_event, DecreaseLiquidityWithParams, Event, EventType, IncreaseLiquidityWithParams,
+    SimulationEvent,
 };
 use tracing::{error, info, warn};
 
@@ -322,7 +325,40 @@ impl PoolAnalyzer {
                 }
                 Event::Burn(e) => {
                     warn!("Burn: {:?}", e);
-                    info!("tx hash: {:?}", event.tx_hash);
+
+                    let next_event = if let Some(sim_event) = event_iter.peek() {
+                        if sim_event.event.event_type() == EventType::CollectPool
+                            || sim_event.event.event_type() == EventType::DecreaseLiquidity
+                        {
+                            event_iter.next().unwrap()
+                        } else {
+                            bail!("Next event is not a collectPool or decreaseLiquidity");
+                        }
+                    } else {
+                        bail!("No events after burn");
+                    };
+
+                    if next_event.event.event_type() == EventType::CollectPool {
+                        warn!("skipping collect pool event");
+                    } else if next_event.event.event_type() == EventType::DecreaseLiquidity {
+                        let decrease_liquidity_event: DecreaseLiquidityWithParams =
+                            next_event.try_into()?;
+                        let token_id = self
+                            .token_id_map.get(&decrease_liquidity_event.event.tokenId)
+                            .context("Token id not found for Burn, mismatch between burn and mint position manager events")?;
+                        let minter = self
+                            .address_map
+                            .get(&event.from)
+                            .context("Minter not found for Burn, mismatch between burn and mint position manager events")?;
+                        pool_burn(
+                            self.nonfungible_position_manager.clone(),
+                            token_id.clone(),
+                            minter.clone(),
+                            &e,
+                            &decrease_liquidity_event,
+                        )
+                        .await?;
+                    }
                 }
                 Event::CollectPool(e) => {
                     warn!("CollectPool: {:?}", e);

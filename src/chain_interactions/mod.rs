@@ -12,12 +12,12 @@ use tracing::{error, info};
 
 use crate::abi::{
     ClankerToken::{self, ClankerTokenInstance},
-    INonfungiblePositionManager::INonfungiblePositionManagerInstance,
     IUniswapV3Factory::{IUniswapV3FactoryInstance, PoolCreated},
-    UniswapV3Pool::{self, Collect, Initialize, UniswapV3PoolInstance},
+    UniswapV3Pool::{self, Initialize, UniswapV3PoolInstance},
     Weth::WethInstance,
 };
 
+pub(crate) mod burn;
 pub(crate) mod mint;
 pub(crate) mod swap;
 
@@ -160,17 +160,6 @@ pub(crate) async fn deploy_and_initialize_pool(
 
     info!("pool initialized");
     Ok((pool, clanker_token, pool_config))
-}
-
-pub(crate) async fn pool_collect(
-    pool: Arc<UniswapV3PoolInstance<HttpClient, ArcAnvilHttpProvider>>,
-    position_manager: Arc<INonfungiblePositionManagerInstance<HttpClient, ArcAnvilHttpProvider>>,
-    collector: Address,
-    amount0: U256,
-    amount1: U256,
-    collect_event: &Collect,
-) -> Result<()> {
-    Ok(())
 }
 
 // Prepares an account for use in simulation by:
