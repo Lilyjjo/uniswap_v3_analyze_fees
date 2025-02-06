@@ -6,7 +6,7 @@ use crate::{
         anvil_connection, approve_token,
         burn::pool_burn,
         deploy_and_initialize_pool, initialize_simulation_account,
-        mint::{initialize_mint_account, pool_increase_liquidity, pool_mint, send_clanker_tokens},
+        mint::{pool_increase_liquidity, pool_mint, send_clanker_tokens},
         swap::pool_swap,
         PoolConfig,
     },
@@ -61,6 +61,7 @@ pub struct PoolAnalyzer {
     token_id_map: HashMap<U256, U256>,
     clanker: Address,
     swap_account: Address,
+    mint_account: Address,
     pool_config: PoolConfig,
 }
 
@@ -156,6 +157,24 @@ impl PoolAnalyzer {
         )
         .await?;
 
+        // setup mint account, we use the same address for all minting
+        // because we only care about the PNL of the position, not the
+        // address associated with the mint.
+        //
+        // we could use different addresses, but the simluations were being
+        // slowed down in the mint account setup flow and we didn't
+        // track NFT transfers (we could if needed for some other reason)
+        let mint_account = Address::random();
+        initialize_simulation_account(
+            anvil_provider.clone(),
+            mint_account,
+            Some(clanker_token.clone()),
+            weth.clone(),
+            swap_router.address(),
+            nonfungible_position_manager.address(),
+        )
+        .await?;
+
         // send all clanker tokens to swap account, tokens needed for minting
         // are pulled from this account on a per mint basis
         let total_supply = clanker_token.totalSupply().call().await?._0;
@@ -182,6 +201,7 @@ impl PoolAnalyzer {
             token_id_map: HashMap::new(),
             clanker,
             swap_account,
+            mint_account,
             pool_config,
         })
     }
@@ -229,40 +249,14 @@ impl PoolAnalyzer {
                 Event::Mint(e) => {
                     warn!("Minting");
 
-                    let minter = match self.address_map.get(&event.from) {
-                        // account already exists, just send needed mint tokens
-                        Some(mapped_address) => {
-                            send_clanker_tokens(
-                                self.clanker_token.clone(),
-                                &self.pool_config,
-                                mapped_address.clone(),
-                                &self.swap_account,
-                                &e,
-                            )
-                            .await?;
-                            mapped_address.clone()
-                        }
-                        None => {
-                            let new_minter = initialize_mint_account(
-                                self.anvil_provider.clone(),
-                                self.clanker_token.clone(),
-                                self.weth.clone(),
-                                self.swap_router.address(),
-                                &self.swap_account,
-                                self.nonfungible_position_manager.address(),
-                                &e,
-                                &self.pool_config,
-                            )
-                            .await?;
-                            self.address_map.insert(event.from, new_minter);
-
-                            info!(
-                                "Original address: {}, new address: {}",
-                                event.from, new_minter
-                            );
-                            new_minter
-                        }
-                    };
+                    send_clanker_tokens(
+                        self.clanker_token.clone(),
+                        &self.pool_config,
+                        self.mint_account.clone(),
+                        &self.swap_account,
+                        &e,
+                    )
+                    .await?;
 
                     // next event should be liquidity add
                     let increase_liquidity_event: IncreaseLiquidityWithParams =
@@ -287,7 +281,7 @@ impl PoolAnalyzer {
                     {
                         pool_increase_liquidity(
                             self.nonfungible_position_manager.clone(),
-                            minter,
+                            self.mint_account.clone(),
                             &e,
                             &increase_liquidity_event,
                             token_id.clone(),
@@ -298,7 +292,7 @@ impl PoolAnalyzer {
                         let token_id = pool_mint(
                             self.nonfungible_position_manager.clone(),
                             &self.pool_config,
-                            minter,
+                            self.mint_account.clone(),
                             &e,
                             &increase_liquidity_event,
                         )
@@ -346,14 +340,10 @@ impl PoolAnalyzer {
                         let token_id = self
                             .token_id_map.get(&decrease_liquidity_event.event.tokenId)
                             .context("Token id not found for Burn, mismatch between burn and mint position manager events")?;
-                        let minter = self
-                            .address_map
-                            .get(&event.from)
-                            .context("Minter not found for Burn, mismatch between burn and mint position manager events")?;
                         pool_burn(
                             self.nonfungible_position_manager.clone(),
                             token_id.clone(),
-                            minter.clone(),
+                            self.mint_account.clone(),
                             &e,
                             &decrease_liquidity_event,
                         )

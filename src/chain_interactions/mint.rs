@@ -15,43 +15,13 @@ use crate::{
             INonfungiblePositionManagerInstance, IncreaseLiquidityParams, MintParams,
         },
         UniswapV3Pool::Mint,
-        Weth::WethInstance,
     },
     fee_analyzer::simulation_events::IncreaseLiquidityWithParams,
 };
 
 use crate::fee_analyzer::{ArcAnvilHttpProvider, HttpClient};
 
-use super::{initialize_simulation_account, PoolConfig};
-
-pub(crate) async fn initialize_mint_account(
-    anvil_provider: ArcAnvilHttpProvider,
-    token: Arc<ClankerTokenInstance<HttpClient, ArcAnvilHttpProvider>>,
-    weth: Arc<WethInstance<HttpClient, ArcAnvilHttpProvider>>,
-    swap_router: &Address,
-    swap_account: &Address,
-    position_manager: &Address,
-    mint: &Mint,
-    pool_config: &PoolConfig,
-) -> Result<Address> {
-    let new_minter = Address::random();
-
-    // initialize with weth and sign approvals
-    initialize_simulation_account(
-        anvil_provider,
-        new_minter,
-        Some(token.clone()),
-        weth,
-        swap_router,
-        position_manager,
-    )
-    .await?;
-
-    // send needed clanker tokens for mint
-    send_clanker_tokens(token, pool_config, new_minter, swap_account, mint).await?;
-
-    Ok(new_minter)
-}
+use super::PoolConfig;
 
 pub(crate) async fn send_clanker_tokens(
     token: Arc<ClankerTokenInstance<HttpClient, ArcAnvilHttpProvider>>,
@@ -123,16 +93,34 @@ pub(crate) async fn pool_mint(
         .context("Failed to simulate mint")?
         .tokenId;
 
-    let receipt = position_manager
-        .mint(mint_params)
-        .from(minter)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    if !receipt.inner.status() {
-        bail!("Failed to mint");
+    let mut attempts = 0;
+    let max_attempts = 4;
+    let mut receipt = None;
+
+    while attempts < max_attempts {
+        match position_manager
+            .mint(mint_params.clone())
+            .from(minter)
+            .send()
+            .await?
+            .get_receipt()
+            .await
+        {
+            Ok(r) => {
+                if r.inner.status() {
+                    receipt = Some(r);
+                    break;
+                }
+            }
+            Err(e) => {
+                error!("Failed to mint, retrying: {:?}", e);
+            }
+        }
+        attempts += 1;
     }
+
+    let receipt =
+        receipt.ok_or_else(|| eyre::eyre!("Failed to mint after {} attempts", max_attempts))?;
 
     check_mint_outcomes(mint_event, &receipt).await?;
 
@@ -155,18 +143,36 @@ pub(crate) async fn pool_increase_liquidity(
         deadline: U256::from_str("8737924142").unwrap(),
     };
 
-    let receipt = position_manager
-        .increaseLiquidity(increase_liquidity_params)
-        .from(minter)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    if !receipt.inner.status() {
-        //let trace = alloy::providers::ext::TraceApi::trace_transaction(&anvil_provider, receipt.transaction_hash).await?;
-        //warn!("trace: {:?}", trace);
-        bail!("Failed to increase liquidity");
+    let mut attempts = 0;
+    let max_attempts = 4;
+    let mut receipt = None;
+
+    while attempts < max_attempts {
+        match position_manager
+            .increaseLiquidity(increase_liquidity_params.clone())
+            .from(minter)
+            .send()
+            .await?
+            .get_receipt()
+            .await
+        {
+            Ok(r) => {
+                if r.inner.status() {
+                    receipt = Some(r);
+                    break;
+                }
+            }
+            Err(_) => {}
+        }
+        attempts += 1;
     }
+
+    let receipt = receipt.ok_or_else(|| {
+        eyre::eyre!(
+            "Failed to increase liquidity after {} attempts",
+            max_attempts
+        )
+    })?;
 
     // check increase liquidity outcomes
     check_mint_outcomes(mint_event, &receipt).await?;

@@ -35,17 +35,34 @@ pub(crate) async fn pool_burn(
         deadline: U256::from_str("8737924142").unwrap(),
     };
 
-    let receipt = position_manager
-        .decreaseLiquidity(decrease_liquidity_params)
-        .from(minter)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    let mut attempts = 0;
+    let max_attempts = 4;
+    let mut receipt = None;
 
-    if !receipt.inner.status() {
-        bail!("Failed to burn");
+    while attempts < max_attempts {
+        match position_manager
+            .decreaseLiquidity(decrease_liquidity_params.clone())
+            .from(minter)
+            .send()
+            .await?
+            .get_receipt()
+            .await
+        {
+            Ok(r) => {
+                if r.inner.status() {
+                    receipt = Some(r);
+                    break;
+                }
+            }
+            Err(e) => {
+                error!("Failed to burn, retrying: {:?}", e);
+            }
+        }
+        attempts += 1;
     }
+
+    let receipt =
+        receipt.ok_or_else(|| eyre::eyre!("Failed to burn after {} attempts", max_attempts))?;
 
     // check burn outcomes
     check_burn_outcomes(burn_event, &receipt).await?;

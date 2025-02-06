@@ -176,11 +176,13 @@ pub(crate) async fn initialize_simulation_account(
     position_manager: &Address,
 ) -> Result<()> {
     let initial_eth_amount = U256::from_str("1000000000000000000000000000000000000").unwrap();
+    info!("Setting balance for account: {:?}", address);
     anvil_provider
         .anvil_set_balance(address, initial_eth_amount)
         .await?;
+    info!("Set balance for account: {:?}", address);
     anvil_provider.anvil_impersonate_account(address).await?;
-
+    info!("Impersonated account: {:?}", address);
     // convert half of the native token to WETH
     weth.deposit()
         .from(address)
@@ -190,12 +192,16 @@ pub(crate) async fn initialize_simulation_account(
         .watch()
         .await?;
 
+    // depositing?
+    info!("Depositing WETH");
+
     if let Some(token) = token {
         approve_token(token, position_manager, swap_router, address).await?;
     }
+    info!("Approved token");
 
     approve_weth(weth, position_manager, swap_router, address).await?;
-
+    info!("Approved WETH");
     Ok(())
 }
 
