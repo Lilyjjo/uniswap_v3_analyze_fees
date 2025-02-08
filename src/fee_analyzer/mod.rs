@@ -5,6 +5,11 @@ use crate::{
     chain_interactions::{
         anvil_connection, approve_token,
         burn::pool_burn,
+        collect::{
+            create_position_info_from_mint_event, pool_close_out_position,
+            pool_collect_fees_post_decrease_liquidity, pool_collect_fees_post_increase_liquidity,
+            PositionInfo,
+        },
         deploy_and_initialize_pool, initialize_simulation_account,
         mint::{pool_increase_liquidity, pool_mint, send_clanker_tokens},
         swap::pool_swap,
@@ -56,13 +61,14 @@ pub struct PoolAnalyzer {
     >,
     swap_router: Arc<ISwapRouter::ISwapRouterInstance<HttpClient, ArcAnvilHttpProvider>>,
     quoter: Arc<IQuoterV2::IQuoterV2Instance<HttpClient, ArcAnvilHttpProvider>>,
-    pool_simulation_events: Vec<SimulationEvent>,
+    pool_simulation_events: Option<Vec<SimulationEvent>>,
     address_map: HashMap<Address, Address>,
     token_id_map: HashMap<U256, U256>,
     clanker: Address,
     swap_account: Address,
     mint_account: Address,
     pool_config: PoolConfig,
+    position_info: HashMap<U256, Vec<PositionInfo>>,
 }
 
 pub struct PoolAnalyzerConfig {
@@ -196,19 +202,25 @@ impl PoolAnalyzer {
             nonfungible_position_manager,
             swap_router,
             quoter,
-            pool_simulation_events,
+            pool_simulation_events: Some(pool_simulation_events),
             address_map,
             token_id_map: HashMap::new(),
             clanker,
             swap_account,
             mint_account,
             pool_config,
+            position_info: HashMap::new(),
         })
     }
 
     pub async fn run_simulation(&mut self) -> Result<()> {
-        // TODO: figure out if cloning here makes sense long term (do we want to run multiple simulations?)
-        let mut event_iter = self.pool_simulation_events.clone().into_iter().peekable();
+        // TODO: figure out how to make this prettier
+        let mut event_iter = self
+            .pool_simulation_events
+            .take()
+            .unwrap()
+            .into_iter()
+            .peekable();
         // skip first two event, they are pool created and initialize TODO clean up
         event_iter.next();
         event_iter.next();
@@ -218,7 +230,8 @@ impl PoolAnalyzer {
             info!("event: {:?}", event_count);
             info!("event: {:?}", event);
             event_count += 1;
-            match event.event {
+
+            match event.event.clone() {
                 Event::PoolCreated(create_event) => {
                     // first event is pool created, pool initialize should be next event
                     let initialize_event = if let Some(sim_event) = event_iter.peek() {
@@ -279,6 +292,7 @@ impl PoolAnalyzer {
                         .token_id_map
                         .get(&increase_liquidity_event.event.tokenId)
                     {
+                        // position already exists, increase liquidity
                         pool_increase_liquidity(
                             self.nonfungible_position_manager.clone(),
                             self.mint_account.clone(),
@@ -287,6 +301,33 @@ impl PoolAnalyzer {
                             token_id.clone(),
                         )
                         .await?;
+
+                        // find position
+                        let position = self
+                            .position_info
+                            .get_mut(&token_id)
+                            .unwrap()
+                            .last_mut()
+                            .context("Position info not found for increase liquidity")?;
+
+                        // update position pnl info as if new position was created
+                        let position_info = pool_collect_fees_post_increase_liquidity(
+                            self.nonfungible_position_manager.clone(),
+                            self.pool.clone(),
+                            self.swap_router.clone(),
+                            &self.pool_config,
+                            self.mint_account.clone(),
+                            self.swap_account.clone(),
+                            token_id.clone(),
+                            position,
+                            event.block,
+                            increase_liquidity_event,
+                        )
+                        .await?;
+
+                        // insert position info into map
+                        let position_info_vec = self.position_info.get_mut(&token_id).unwrap();
+                        position_info_vec.push(position_info);
                     } else {
                         // token id not found, this is a fresh mint
                         let token_id = pool_mint(
@@ -297,29 +338,41 @@ impl PoolAnalyzer {
                             &increase_liquidity_event,
                         )
                         .await?;
-                        info!("new token id: {}", token_id);
 
-                        // TODO add checks to ensure increase liquidity event matches just processed mint event
                         self.token_id_map
                             .insert(increase_liquidity_event.event.tokenId, token_id);
+
+                        // create new position info
+                        let position = create_position_info_from_mint_event(
+                            self.pool.clone(),
+                            &self.pool_config,
+                            event.clone(),
+                            token_id,
+                            increase_liquidity_event.event.tokenId,
+                        )
+                        .await?;
+
+                        // insert position info into map
+                        self.position_info.insert(token_id, vec![position]);
                     }
                 }
                 Event::Swap(e) => {
                     info!("swapping");
-                    let swap_address = self.swap_account;
-
                     pool_swap(
                         self.pool.clone(),
                         self.swap_router.clone(),
                         self.quoter.clone(),
                         &e,
-                        swap_address,
+                        self.swap_account,
                     )
                     .await?;
                 }
                 Event::Burn(e) => {
                     warn!("Burn: {:?}", e);
 
+                    // burns are always followed by a collectPool or decreaseLiquidity event,
+                    // only want to replay the decreaseLiquidity event as the collect event is
+                    // a zero-liquditiy burn done to update the pool fees
                     let next_event = if let Some(sim_event) = event_iter.peek() {
                         if sim_event.event.event_type() == EventType::CollectPool
                             || sim_event.event.event_type() == EventType::DecreaseLiquidity
@@ -332,11 +385,11 @@ impl PoolAnalyzer {
                         bail!("No events after burn");
                     };
 
-                    if next_event.event.event_type() == EventType::CollectPool {
-                        warn!("skipping collect pool event");
-                    } else if next_event.event.event_type() == EventType::DecreaseLiquidity {
+                    if next_event.event.event_type() == EventType::DecreaseLiquidity {
                         let decrease_liquidity_event: DecreaseLiquidityWithParams =
                             next_event.try_into()?;
+
+                        // process decrease liquidity event which triggered the burn event
                         let token_id = self
                             .token_id_map.get(&decrease_liquidity_event.event.tokenId)
                             .context("Token id not found for Burn, mismatch between burn and mint position manager events")?;
@@ -348,27 +401,88 @@ impl PoolAnalyzer {
                             &decrease_liquidity_event,
                         )
                         .await?;
+
+                        // find the position info that should exist for the token id
+                        let position = self
+                            .position_info
+                            .get_mut(&token_id)
+                            .unwrap()
+                            .last_mut()
+                            .context("Position info not found DL")?;
+
+                        // process the position info pnl
+                        let position_info = pool_collect_fees_post_decrease_liquidity(
+                            self.nonfungible_position_manager.clone(),
+                            self.pool.clone(),
+                            self.swap_router.clone(),
+                            &self.pool_config,
+                            self.mint_account.clone(),
+                            self.swap_account.clone(),
+                            token_id.clone(),
+                            position,
+                            event.block,
+                            decrease_liquidity_event,
+                        )
+                        .await?;
+
+                        // insert the new position into the map
+                        let position_info_vec = self.position_info.get_mut(&token_id).unwrap();
+                        position_info_vec.push(position_info);
                     }
                 }
-                Event::CollectPool(e) => {
-                    warn!("CollectPool: {:?}", e);
-                    info!("tx hash: {:?}", event.tx_hash);
-                }
-                Event::CollectNpm(e) => {
-                    warn!("CollectNpm: {:?}", e);
-                    info!("tx hash: {:?}", event.tx_hash);
-                }
                 Event::IncreaseLiquidity(e) => {
-                    warn!("IncreaseLiquidity: {:?}", e);
+                    error!(
+                        "Increase liquidity event not processed in mint handling: {:?}",
+                        e
+                    );
                     info!("tx hash: {:?}", event.tx_hash);
+                    bail!("Increase liquidity event not processed in mint handling");
                 }
                 Event::DecreaseLiquidity(e) => {
-                    warn!("DecreaseLiquidity: {:?}", e);
+                    error!(
+                        "Decrease liquidity event not processed in burn handling: {:?}",
+                        e
+                    );
                     info!("tx hash: {:?}", event.tx_hash);
+                    bail!("Decrease liquidity event not processed in burn handling");
+                }
+                _ => {
+                    // not handling collect events as we do it manually after
+                    // liquidity position changes
+                    warn!("Unhandled event: {:?}", event);
                 }
             }
         }
 
+        // close out all positions
+        for (token_id, mut position_infos) in self.position_info.clone().into_iter() {
+            let mut closed_found = false;
+            for position_info in position_infos.iter_mut() {
+                if !position_info.closed {
+                    if closed_found {
+                        bail!("Multiple positions found for token id: {}", token_id);
+                    } else {
+                        closed_found = true;
+                    }
+                    info!("closing position: ---");
+                    pool_close_out_position(
+                        self.nonfungible_position_manager.clone(),
+                        self.pool.clone(),
+                        self.swap_router.clone(),
+                        &self.pool_config,
+                        self.mint_account.clone(),
+                        self.swap_account.clone(),
+                        token_id.clone(),
+                        position_info,
+                        0,
+                    )
+                    .await?;
+                }
+                if position_info.liquidity_in > u128::try_from(0).unwrap() {
+                    info!("{}", position_info);
+                }
+            }
+        }
         Ok(())
     }
 }

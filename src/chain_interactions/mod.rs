@@ -18,6 +18,7 @@ use crate::abi::{
 };
 
 pub(crate) mod burn;
+pub(crate) mod collect;
 pub(crate) mod mint;
 pub(crate) mod swap;
 
@@ -211,9 +212,7 @@ pub(crate) async fn approve_token(
     swap_router: &Address,
     approver: Address,
 ) -> Result<()> {
-    let max_approval =
-        U256::from_str("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
-            .unwrap();
+    let max_approval = U256::MAX;
 
     let receipt = token
         .approve(swap_router.clone(), max_approval)
@@ -247,9 +246,7 @@ pub(crate) async fn approve_weth(
     swap_router: &Address,
     approver: Address,
 ) -> Result<()> {
-    let max_approval =
-        U256::from_str("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
-            .unwrap();
+    let max_approval = U256::MAX;
 
     let receipt = weth
         .approve(swap_router.clone(), max_approval)

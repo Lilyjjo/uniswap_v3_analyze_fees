@@ -8,9 +8,9 @@ This repo analyzes which LP positions are making the most fees on a target Unisw
 - [x] Reads in historical data from csv files into memory
 - [x] Parses the data into a format that can be used by the program
 - [x] Forks the http endpoint's target chain at the target block number and connects to it with Anvil (Uniswap V3 Factory and Weth need to be deployed by this block number)
-- [ ] Simulates the pool's activity on the forked endpoint (almost done)
-- [ ] Calculates the fees earned by each LP position
-- [ ] Outputs the results in a human readable format
+- [X] Simulates the pool's activity on the forked endpoint
+- [X] Calculates the fees earned by each LP position
+- [ ] Outputs the results into CSV file for further analysis
 
 ### Expected Data format
 The example data in the `example_pool_data` folder is from the [`based_fartcoin` pool](https://basescan.org/token/0x2f6c17fa9f9bc3600346ab4e48c0701e1d5962ae?a=0xfdbaf04326acc24e3d1788333826b71e3291863a) on Base. Similar data can be found by querying Dune like such:
