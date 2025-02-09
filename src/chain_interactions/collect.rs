@@ -25,7 +25,7 @@ use crate::fee_analyzer::{ArcAnvilHttpProvider, HttpClient};
 use super::PoolConfig;
 
 #[derive(Debug, Clone)]
-enum PositionAction {
+pub(crate) enum PositionAction {
     Open,
     IncreaseLiquidity,
     DecreaseLiquidity,

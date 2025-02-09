@@ -1,16 +1,8 @@
 # uniswap_v3_analyze_fees
 
-Note: this repo is a work in progress and is not finished yet
-
 This repo analyzes which LP positions are making the most fees on a target Uniswap V3 pool using historial event and transaction data about activity on the pool.
 
-### Progress
-- [x] Reads in historical data from csv files into memory
-- [x] Parses the data into a format that can be used by the program
-- [x] Forks the http endpoint's target chain at the target block number and connects to it with Anvil (Uniswap V3 Factory and Weth need to be deployed by this block number)
-- [X] Simulates the pool's activity on the forked endpoint
-- [X] Calculates the fees earned by each LP position
-- [ ] Outputs the results into CSV file for further analysis
+This was built to work with pools deployed by the [Clanker](https://github.com/clanker-devco/contracts) project, but should work with any Uniswap V3 pool with minimal modifications.
 
 The output of this program is a CSV file with the following information:
 ```
@@ -144,3 +136,9 @@ just copy-env
 ## Run the program
 just run
 ```
+
+## Output
+
+Example CSV file output can be found in the `example_output_data` folder.
+
+Note: this program is not optimized and takes a while to run. For the example data (~100k events) it takes about 2 hours to run on a 2024 Macbook Pro.

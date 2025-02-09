@@ -22,8 +22,9 @@ use alloy::{
     providers::{layers::AnvilProvider, RootProvider},
     transports::http::{reqwest, Http},
 };
-use csv_converter::{pool_events, CSVReaderConfig};
-use eyre::{bail, Context, ContextCompat, Result};
+use csv_input_reader::{pool_events, CSVReaderConfig};
+use csv_output_writer::write_positions_to_csv;
+use eyre::{bail, eyre, Context, ContextCompat, Result};
 use simulation_events::{
     find_first_event, DecreaseLiquidityWithParams, Event, EventType, IncreaseLiquidityWithParams,
     SimulationEvent,
@@ -39,7 +40,8 @@ use crate::abi::{
     Weth,
 };
 
-pub mod csv_converter;
+pub mod csv_input_reader;
+pub mod csv_output_writer;
 pub(crate) mod simulation_events;
 
 pub type HttpClient = Http<reqwest::Client>;
@@ -69,6 +71,7 @@ pub struct PoolAnalyzer {
     mint_account: Address,
     pool_config: PoolConfig,
     position_info: HashMap<U256, Vec<PositionInfo>>,
+    output_csv_file_path: String,
 }
 
 pub struct PoolAnalyzerConfig {
@@ -80,6 +83,7 @@ pub struct PoolAnalyzerConfig {
     pub uniswap_v3_quoter_address: Address,
     pub weth_address: Address,
     pub config: CSVReaderConfig,
+    pub output_csv_file_path: String,
 }
 
 impl PoolAnalyzer {
@@ -210,6 +214,7 @@ impl PoolAnalyzer {
             mint_account,
             pool_config,
             position_info: HashMap::new(),
+            output_csv_file_path: config.output_csv_file_path,
         })
     }
 
@@ -485,6 +490,18 @@ impl PoolAnalyzer {
                 }
             }
         }
+
+        // filter out empty positions and write to csv
+        write_positions_to_csv(
+            self.position_info
+                .values()
+                .flatten()
+                .filter(|p| p.liquidity_in > u128::try_from(0).unwrap())
+                .cloned()
+                .collect(),
+            &self.output_csv_file_path,
+        )
+        .map_err(|e| eyre!("Failed to write positions to csv: {}", e))?;
         Ok(())
     }
 }

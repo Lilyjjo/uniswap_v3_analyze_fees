@@ -1,6 +1,6 @@
 use alloy::primitives::Address;
 use eyre::{Result, WrapErr};
-use fee_analyzer::{csv_converter::CSVReaderConfig, PoolAnalyzer, PoolAnalyzerConfig};
+use fee_analyzer::{csv_input_reader::CSVReaderConfig, PoolAnalyzer, PoolAnalyzerConfig};
 use tracing::info;
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
@@ -86,6 +86,9 @@ async fn main() -> Result<()> {
     let decrease_liquidity_events_path = std::env::var("DECREASE_LIQUIDITY_CSV_FILE_PATH")
         .expect("DECREASE_LIQUIDITY_CSV_FILE_PATH is required");
 
+    let output_csv_file_path =
+        std::env::var("OUTPUT_CSV_FILE_PATH").expect("OUTPUT_CSV_FILE_PATH is required");
+
     let csv_reader_config = CSVReaderConfig {
         initialize_events_path,
         swap_events_path,
@@ -107,6 +110,7 @@ async fn main() -> Result<()> {
         uniswap_v3_quoter_address,
         weth_address,
         config: csv_reader_config,
+        output_csv_file_path,
     })
     .await?;
 
