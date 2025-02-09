@@ -1,7 +1,7 @@
 use std::{fmt, sync::Arc};
 
 use alloy::{
-    primitives::{aliases::I24, Address, Log as AbiLog, I160, I256, U160, U256},
+    primitives::{aliases::I24, Address, Log as AbiLog, I256, U160, U256},
     sol_types::SolEvent,
 };
 use eyre::{ContextCompat, Result};
@@ -45,43 +45,42 @@ impl fmt::Display for PositionAction {
 
 #[derive(Debug, Clone)]
 pub(crate) struct PositionInfo {
+    // metadata
     pub token_id: U256,
     pub original_token_id: U256,
     pub lower_tick: I24,
     pub upper_tick: I24,
     pub index: u64,
+    pub position_action: PositionAction,
     pub closed: bool,
+    // opening info
     pub block_in: u64,
     pub token_amount_in: U256,
     pub weth_amount_in: U256,
     pub sqrt_price_limit_x96_in: U160,
     pub tick_in: I24,
     pub liquidity_in: u128,
+    // closing info
     pub block_out: u64,
     pub token_amount_out: U256,
     pub weth_amount_out: U256,
     pub sqrt_price_limit_x96_out: U160,
     pub tick_out: I24,
+    // fees info
     pub fees_earned_token: U256,
     pub fees_earned_weth: U256,
-    pub position_action: PositionAction,
-    pub end_token_in_weth_if_sold: U256,
+    // approximate values for pnl calc
+    // to try to represent impermanent loss
+    // with fee offset
+    pub approx_starting_weth: U256, // weth in + weth value of token in
+    pub approx_ending_weth: U256,   // weth out + weth fees + weth value of (token out + token fees)
+    pub end_token_gain_separate: I256, // token out + token fees - token in
+    pub end_weth_gain_separate: I256, // weth out + weth fees - weth in
+    pub end_weth_gain_converted: I256, // approx_ending_weth - approx_starting_weth
 }
 
 impl fmt::Display for PositionInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let end_weth_gain = I256::try_from(self.weth_amount_out).unwrap()
-            - I256::try_from(self.weth_amount_in).unwrap()
-            + I256::try_from(self.fees_earned_weth).unwrap();
-        let end_token_gain = I256::try_from(self.token_amount_out).unwrap()
-            - I256::try_from(self.token_amount_in).unwrap()
-            + I256::try_from(self.fees_earned_token).unwrap();
-        //let token_price_difference
-        let token_price_difference = I160::try_from(self.sqrt_price_limit_x96_in).unwrap()
-            - I160::try_from(self.sqrt_price_limit_x96_out).unwrap();
-        let end_weth_if_sold =
-            I256::try_from(self.end_token_in_weth_if_sold).unwrap() + end_weth_gain;
-
         write!(
             f,
             "\nPosition Info:\n\
@@ -103,13 +102,14 @@ impl fmt::Display for PositionInfo {
              │  ├─ WETH Amount Out:           {}\n\
              │  ├─ SqrtPriceLimitX96 Out:     {}\n\
              │  └─ Tick Out:                   {}\n\
-             ├─ Price difference:             {}\n\
-             ├─ position pnl ---\n\
+             ├─ Position PNL ---\n\
              │  token fees earned:                   {}\n\
              │  weth fees earned:                    {}\n\
              │  net token gain (if position closed): {}\n\
              │  net weth gain (if position closed):  {}\n\
-             │  approx ending weth (if token sold):  {}\n",
+             │  approx starting weth:  {}\n\
+             │  approx ending weth:    {}\n\
+             └─ net pnl in weth:       {}",
             self.original_token_id,
             self.index,
             self.position_action,
@@ -126,16 +126,21 @@ impl fmt::Display for PositionInfo {
             self.weth_amount_out,
             self.sqrt_price_limit_x96_out,
             self.tick_out,
-            token_price_difference,
             self.fees_earned_token,
             self.fees_earned_weth,
-            end_token_gain,
-            end_weth_gain,
-            end_weth_if_sold,
+            self.end_token_gain_separate,
+            self.end_weth_gain_separate,
+            self.approx_starting_weth,
+            self.approx_ending_weth,
+            self.end_weth_gain_converted,
         )
     }
 }
 
+// simulates the amount of weth that would be received from swapping the given token amount,
+// used to approximate the starting and ending weth value of the positions. note that this is
+// not 100% accurate because sometimes this is ran when the position is still open and could
+// be consumed during the swap.
 async fn sim_swap_token_for_weth(
     swap_router: Arc<ISwapRouterInstance<HttpClient, ArcAnvilHttpProvider>>,
     pool_config: &PoolConfig,
@@ -273,6 +278,8 @@ async fn collect_max_fees(
 pub async fn create_position_info_from_mint_event(
     pool: Arc<UniswapV3PoolInstance<HttpClient, ArcAnvilHttpProvider>>,
     pool_config: &PoolConfig,
+    swap_router: Arc<ISwapRouterInstance<HttpClient, ArcAnvilHttpProvider>>,
+    swap_account: Address,
     original_mint_event: SimulationEvent,
     token_id: U256,
     original_token_id: U256,
@@ -283,6 +290,22 @@ pub async fn create_position_info_from_mint_event(
         (mint_event.amount0, mint_event.amount1)
     } else {
         (mint_event.amount1, mint_event.amount0)
+    };
+
+    // approximate the starting value of the position in weth
+    // by converting the starting token amount into weth
+
+    // check that this isn't the first mint event using fee growth as proxy
+    let fee_growth_check = if pool_config.clanker_is_token0 {
+        pool.feeGrowthGlobal0X128().call().await?._0
+    } else {
+        pool.feeGrowthGlobal1X128().call().await?._0
+    };
+
+    let token_converted_to_weth = if token_amount_in > U256::ZERO && fee_growth_check > U256::ZERO {
+        sim_swap_token_for_weth(swap_router, pool_config, token_amount_in, swap_account).await?
+    } else {
+        U256::ZERO
     };
 
     let slot0 = pool.slot0().call().await?;
@@ -308,7 +331,11 @@ pub async fn create_position_info_from_mint_event(
         fees_earned_token: U256::ZERO,
         fees_earned_weth: U256::ZERO,
         position_action: PositionAction::Open,
-        end_token_in_weth_if_sold: U256::ZERO,
+        approx_ending_weth: U256::ZERO,
+        approx_starting_weth: token_converted_to_weth + weth_amount_in,
+        end_token_gain_separate: I256::ZERO,
+        end_weth_gain_separate: I256::ZERO,
+        end_weth_gain_converted: I256::ZERO,
     };
 
     Ok(position_info)
@@ -399,14 +426,24 @@ async fn close_out_position_info(
     }
 
     // simulate selling the token for weth for pnl estimate
-    position_info.end_token_in_weth_if_sold = sim_swap_token_for_weth(
-        swap_router,
-        pool_config,
-        position_info.token_amount_out,
-        swap_account,
-    )
-    .await?;
+    // and add the weth out amount to get the total weth amount
+    let token_amount_to_sell = position_info.token_amount_out + position_info.fees_earned_token;
+    let token_converted_to_weth =
+        sim_swap_token_for_weth(swap_router, pool_config, token_amount_to_sell, swap_account)
+            .await?;
 
+    position_info.approx_ending_weth =
+        token_converted_to_weth + position_info.weth_amount_out + position_info.fees_earned_weth;
+
+    position_info.end_weth_gain_separate = I256::try_from(position_info.weth_amount_out).unwrap()
+        - I256::try_from(position_info.weth_amount_in).unwrap()
+        + I256::try_from(position_info.fees_earned_weth).unwrap();
+    position_info.end_token_gain_separate = I256::try_from(position_info.token_amount_out).unwrap()
+        - I256::try_from(position_info.token_amount_in).unwrap()
+        + I256::try_from(position_info.fees_earned_token).unwrap();
+    position_info.end_weth_gain_converted = I256::try_from(position_info.approx_ending_weth)
+        .unwrap()
+        - I256::try_from(position_info.approx_starting_weth).unwrap();
     Ok(())
 }
 
@@ -425,7 +462,7 @@ pub async fn pool_collect_fees_post_increase_liquidity(
     close_out_position_info(
         position_manager,
         pool,
-        swap_router,
+        swap_router.clone(),
         pool_config,
         minter,
         swap_account,
@@ -449,6 +486,13 @@ pub async fn pool_collect_fees_post_increase_liquidity(
         )
     };
 
+    // get new position value by adding the increase amounts to the starting values
+    let token_start = position_info.token_amount_in + token_amount_increase;
+    let weth_start = position_info.weth_amount_in + weth_amount_increase;
+    let token_converted_to_weth =
+        sim_swap_token_for_weth(swap_router, pool_config, token_start, swap_account).await?;
+    let starting_weth = token_converted_to_weth + weth_start;
+
     let new_position_info = PositionInfo {
         token_id: token_id,
         original_token_id: position_info.original_token_id,
@@ -459,8 +503,8 @@ pub async fn pool_collect_fees_post_increase_liquidity(
         tick_out: I24::ZERO,
         closed: false,
         block_in: block_out,
-        token_amount_in: position_info.token_amount_in + token_amount_increase,
-        weth_amount_in: position_info.weth_amount_in + weth_amount_increase,
+        token_amount_in: token_start,
+        weth_amount_in: weth_start,
         sqrt_price_limit_x96_in: position_info.sqrt_price_limit_x96_out,
         liquidity_in: position_info.liquidity_in + increase_liquidity_event.event.liquidity,
         block_out: 0,
@@ -470,7 +514,11 @@ pub async fn pool_collect_fees_post_increase_liquidity(
         fees_earned_token: U256::ZERO,
         fees_earned_weth: U256::ZERO,
         position_action: PositionAction::IncreaseLiquidity,
-        end_token_in_weth_if_sold: U256::ZERO,
+        approx_starting_weth: starting_weth,
+        approx_ending_weth: U256::ZERO,
+        end_token_gain_separate: I256::ZERO,
+        end_weth_gain_separate: I256::ZERO,
+        end_weth_gain_converted: I256::ZERO,
     };
 
     Ok(new_position_info)
@@ -492,7 +540,7 @@ pub(crate) async fn pool_collect_fees_post_decrease_liquidity(
     close_out_position_info(
         position_manager,
         pool,
-        swap_router,
+        swap_router.clone(),
         pool_config,
         minter,
         swap_account,
@@ -529,7 +577,11 @@ pub(crate) async fn pool_collect_fees_post_decrease_liquidity(
             fees_earned_token: U256::ZERO,
             fees_earned_weth: U256::ZERO,
             position_action: PositionAction::ClosePosition,
-            end_token_in_weth_if_sold: U256::ZERO,
+            approx_ending_weth: U256::ZERO,
+            approx_starting_weth: U256::ZERO,
+            end_token_gain_separate: I256::ZERO,
+            end_weth_gain_separate: I256::ZERO,
+            end_weth_gain_converted: I256::ZERO,
         })
     } else {
         warn!("position is partially closed, creating new position");
@@ -546,6 +598,18 @@ pub(crate) async fn pool_collect_fees_post_decrease_liquidity(
             )
         };
 
+        let token_start = position_info
+            .token_amount_in
+            .checked_sub(dl_token_amount_out)
+            .expect("token decrease larger than starting token amount");
+        let weth_start = position_info
+            .weth_amount_in
+            .checked_sub(dl_weth_amount_out)
+            .expect("weth decrease larger than starting weth amount");
+        let token_converted_to_weth =
+            sim_swap_token_for_weth(swap_router, pool_config, token_start, swap_account).await?;
+        let starting_weth = token_converted_to_weth + weth_start;
+
         // positional partially closed, create new position with the remaining liquidity
         Ok(PositionInfo {
             token_id: token_id,
@@ -557,8 +621,8 @@ pub(crate) async fn pool_collect_fees_post_decrease_liquidity(
             tick_in: position_info.tick_out,
             tick_out: I24::ZERO,
             block_in: block_out,
-            token_amount_in: position_info.token_amount_in - dl_token_amount_out,
-            weth_amount_in: position_info.weth_amount_in - dl_weth_amount_out,
+            token_amount_in: token_start,
+            weth_amount_in: weth_start,
             sqrt_price_limit_x96_in: position_info.sqrt_price_limit_x96_out,
             liquidity_in: position_info.liquidity_in - decrease_liquidity_event.event.liquidity,
             block_out: 0,
@@ -568,7 +632,11 @@ pub(crate) async fn pool_collect_fees_post_decrease_liquidity(
             fees_earned_token: U256::ZERO,
             fees_earned_weth: U256::ZERO,
             position_action: PositionAction::DecreaseLiquidity,
-            end_token_in_weth_if_sold: U256::ZERO,
+            approx_starting_weth: starting_weth,
+            approx_ending_weth: U256::ZERO,
+            end_token_gain_separate: I256::ZERO,
+            end_weth_gain_separate: I256::ZERO,
+            end_weth_gain_converted: I256::ZERO,
         })
     }
 }

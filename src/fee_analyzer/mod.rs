@@ -346,6 +346,8 @@ impl PoolAnalyzer {
                         let position = create_position_info_from_mint_event(
                             self.pool.clone(),
                             &self.pool_config,
+                            self.swap_router.clone(),
+                            self.swap_account.clone(),
                             event.clone(),
                             token_id,
                             increase_liquidity_event.event.tokenId,

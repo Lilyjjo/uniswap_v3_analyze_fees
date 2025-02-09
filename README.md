@@ -12,6 +12,39 @@ This repo analyzes which LP positions are making the most fees on a target Unisw
 - [X] Calculates the fees earned by each LP position
 - [ ] Outputs the results into CSV file for further analysis
 
+The output of this program is a CSV file with the following information:
+```
+Position Info:
+├─ Token ID:                  1487610
+├─ Token Action Index:        4
+├─ Action Taken:              IncreaseLiquidity
+├─ Lower Tick:                -887200
+├─ Upper Tick:                887200
+├─ Opening info:
+│  ├─ Block In:                  23811582
+│  ├─ Token Amount In:           208168263364547375450278112
+│  ├─ WETH Amount In:            282484755239206530
+│  ├─ SqrtPriceLimitX96 In:      7518598854285689184029296
+│  ├─ Tick In:                   -185264
+│  ├─ Liquidity In:              7618565952586391586621
+├─ Closing info:
+│  ├─ Block Out:                 23849520
+│  ├─ Token Amount Out:          98149514122120427525956866
+│  ├─ WETH Amount Out:           591368665378112390
+│  ├─ SqrtPriceLimitX96 Out:     6149851956130248128746138
+│  └─ Tick Out:                   -189283
+├─ Position PNL ---
+│  token fees earned:                   99877808608147915287192192
+│  weth fees earned:                    601160642580099050
+│  net token gain (if position closed): -10140940634279032637129054
+│  net weth gain (if position closed):  910044552719004910
+│  approx starting weth:  2102874230578705641
+│  approx ending weth:    2356092089989234879
+└─ net pnl in weth:       253217859410529238
+```
+
+The program treats each position modification (open, increase liquidity, decrease liquidity) as a separate position for the purposes of calculating fees earned and position PNL. The index plus token ID can show the history of actions on the position (e.g. 1487610, 4 is the 4th action taken on position 1487610, and the action was an increase in liquidity).
+
 ### Expected Data format
 The example data in the `example_pool_data` folder is from the [`based_fartcoin` pool](https://basescan.org/token/0x2f6c17fa9f9bc3600346ab4e48c0701e1d5962ae?a=0xfdbaf04326acc24e3d1788333826b71e3291863a) on Base. Similar data can be found by querying Dune like such:
 
