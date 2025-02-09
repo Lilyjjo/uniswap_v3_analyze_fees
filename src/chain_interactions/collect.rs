@@ -367,6 +367,31 @@ async fn close_out_position_info(
         position_info.fees_earned_weth = collect_log.amount0;
     }
 
+    // if the position had a decrease, the decreased token amounts
+    // are included in the collect, we need to subtract them to get the
+    // fees earned
+    if let Some(decrease_liquidity_event) = decrease_liquidity_event.clone() {
+        if pool_config.clanker_is_token0 {
+            position_info.fees_earned_token = position_info
+                .fees_earned_token
+                .checked_sub(decrease_liquidity_event.event.amount0)
+                .expect("token fees earned less than decreased token amount");
+            position_info.fees_earned_weth = position_info
+                .fees_earned_weth
+                .checked_sub(decrease_liquidity_event.event.amount1)
+                .expect("weth fees earned less than decreased token amount");
+        } else {
+            position_info.fees_earned_token = position_info
+                .fees_earned_token
+                .checked_sub(decrease_liquidity_event.event.amount1)
+                .expect("token fees earned less than decreased token amount");
+            position_info.fees_earned_weth = position_info
+                .fees_earned_weth
+                .checked_sub(decrease_liquidity_event.event.amount0)
+                .expect("weth fees earned less than decreased token amount");
+        }
+    }
+
     // get the closing price and tick of the position
     let slot0 = pool.slot0().call().await?;
     position_info.sqrt_price_limit_x96_out = slot0.sqrtPriceX96;

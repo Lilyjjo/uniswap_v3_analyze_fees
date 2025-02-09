@@ -56,7 +56,7 @@ struct CSVPositionInfo {
 
 fn convert_position_info_to_csv(position_info: PositionInfo) -> CSVPositionInfo {
     CSVPositionInfo {
-        token_id: position_info.token_id.to_string(),
+        token_id: position_info.original_token_id.to_string(),
         token_action_index: position_info.index.to_string(),
         action_taken: position_info.position_action.to_string(),
         lower_tick: position_info.lower_tick.to_string(),
