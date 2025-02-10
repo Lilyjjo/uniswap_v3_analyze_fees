@@ -462,7 +462,7 @@ impl PoolAnalyzer {
         }
 
         // close out all positions
-        for (token_id, mut position_infos) in self.position_info.clone().into_iter() {
+        for (token_id, position_infos) in self.position_info.iter_mut() {
             let mut closed_found = false;
             for position_info in position_infos.iter_mut() {
                 if !position_info.closed {
